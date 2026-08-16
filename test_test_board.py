@@ -26,6 +26,7 @@ def test_matrix_is_square_and_matches_led_count():
 
 
 def test_key_grid_pitch():
+    assert tb.KEY_PITCH == 19.05, "19.05mm is the keycap pitch, not a tunable"
     x0, y0 = tb.key_xy(0, 0)
     x1, _ = tb.key_xy(0, 1)
     _, y1 = tb.key_xy(1, 0)
