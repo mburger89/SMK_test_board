@@ -528,26 +528,127 @@ def build_sch():
 
 
 # ============================================================ PCB ==========
-# Footprint-instantiation helpers for the three parts gm.py has no generator
-# for (SK6812MINI_E, XIAO_ESP32C6_HEADERS, EC11_VERTICAL). Built from gm's
-# own low-level s-expression primitives (fp_header/pad/fpline/fprect/npth/
-# model) -- "the geometry and s-expression helpers come from
-# generate_macropad.py" per this project's own module docstring -- rather
-# than hand-rolling a parallel set. Geometry matches this project's own
-# smk_test_board.pretty/*.kicad_mod byte-for-byte (those files are what
-# Tasks 1/3/4 already drew and proved); this just re-renders the same
-# numbers as a positioned PCB instance instead of an unplaced library
-# master. Every part below is placed at rot=0 (or SK6812MINI_E's fixed
-# rot=180, matching its own reverse-mount library file), so none of this
-# needs to reason about how a rotated footprint's pad-local angle composes
-# with its parent's -- gm.fp_gateron/fp_diode (called directly, unmodified,
-# for the two footprints that already have generators) are the only parts
-# of this board placed with rot != 0, and they carry their own proven
-# rotation handling.
+# Footprint-instantiation helpers for the four parts gm.py has no generator
+# for (SK6812MINI_E, XIAO_ESP32C6_HEADERS, EC11_VERTICAL, BAT_WIRE_PADS).
+# Built from gm's own low-level s-expression primitives (fp_header/pad/
+# fpline/fprect/fparc/npth/model) -- "the geometry and s-expression helpers
+# come from generate_macropad.py" per this project's own module docstring --
+# rather than hand-rolling a parallel set.
+#
+# Each of these re-renders the SAME geometry as this project's own
+# smk_test_board.pretty/<NAME>.kicad_mod library master, as a positioned PCB
+# instance instead of an unplaced library master. It is NOT byte-for-byte
+# identical to the master and never was -- the masters draw their rectangles
+# as four separate fp_line segments where gm.fprect() emits a single fp_rect,
+# and every uuid differs. An earlier revision of this comment claimed
+# "byte-for-byte", which is both false and unfalsifiable-looking enough that
+# it hid a real defect for several review rounds: _fp_sk6812mini_tb() dropped
+# all 20 of the master's Edge.Cuts primitives (the milled light window this
+# reverse-mount LED shines through) and its pin-1 silk triangle. Nine LEDs
+# shipped with no window at all.
+#
+# What is actually guaranteed, and what test_footprints.py's
+# test_inline_rerenders_match_their_library_master now enforces per
+# element-class (pads / silk / courtyard / fab / Edge.Cuts), is EQUIVALENT
+# GEOMETRY: same pads, same graphics on the same layers, with fp_rect and its
+# four-fp_line spelling treated as the same rectangle. A layer that goes
+# missing from a re-render fails that test loudly.
+#
+# Every part below is placed at rot=0 (or SK6812MINI_E's fixed rot=180,
+# matching its own reverse-mount library file), so none of this needs to
+# reason about how a rotated footprint's pad-local angle composes with its
+# parent's -- gm.fp_gateron/fp_diode (called directly, unmodified, for the
+# two footprints that already have generators) are the only parts of this
+# board placed with rot != 0, and they carry their own proven rotation
+# handling. Footprint graphics are stored in FOOTPRINT-LOCAL coordinates in
+# both .kicad_mod and .kicad_pcb (KiCad applies the instance's own (at x y
+# rot) when it draws them), so the Edge.Cuts window below is written once in
+# local coordinates and lands correctly rotated at all nine placed positions
+# -- exactly how the proven sibling board
+# ~/esp/SMK_Keyboard/smk_kbd_rp2040/smk_kbd_rp2040.kicad_pcb stores its own
+# 58 SK6812MINI_E instances (verified: identical local numbers, footprint
+# (at ... 180)).
+
+# ---- SK6812MINI-E light window (Edge.Cuts) -------------------------------
+# The ~3.4 x 3.0mm rounded-rect cutout milled through the board so this
+# REVERSE-MOUNT LED, soldered to the back, shines through into the switch's
+# north window. Transcribed from smk_test_board.pretty/SK6812MINI_E.kicad_mod
+# (8 fp_line + 12 fp_arc), not re-derived: these are the exact numbers the
+# proven sibling board fabricated. Without them the LEDs are sealed behind
+# solid FR4 and the defect is unreworkable after fab.
+SK6812_WINDOW_LINES = [
+    (1.7, 0, 1.7, 0.700353),
+    (1.7, 0, 1.7, -0.700353),
+    (0, 1.5, 0.900353, 1.5),
+    (0, 1.5, -0.900353, 1.5),
+    (0, -1.5, 0.900353, -1.5),
+    (0, -1.5, -0.900353, -1.5),
+    (-1.7, 0, -1.7, 0.700353),
+    (-1.7, 0, -1.7, -0.700353),
+]
+SK6812_WINDOW_ARCS = [
+    (1.74393, 0.856655, 1.71119, 0.781533, 1.7, 0.700353),
+    (1.74393, 0.856655, 1.67071, 1.47071, 1.05665, 1.54393),
+    (1.7, -0.700353, 1.71118, -0.781538, 1.74393, -0.856655),
+    (1.05665, -1.54393, 1.67071, -1.47071, 1.74393, -0.856655),
+    (1.05665, -1.54393, 0.981533, -1.51119, 0.900353, -1.5),
+    (0.900353, 1.5, 0.981532, 1.51119, 1.05665, 1.54393),
+    (-0.900353, -1.5, -0.981533, -1.51119, -1.05665, -1.54393),
+    (-1.05665, 1.54393, -0.981533, 1.51119, -0.900353, 1.5),
+    (-1.05665, 1.54393, -1.67071, 1.47071, -1.74393, 0.856655),
+    (-1.7, 0.700353, -1.71119, 0.781533, -1.74393, 0.856655),
+    (-1.74393, -0.856655, -1.67071, -1.47071, -1.05665, -1.54393),
+    (-1.74393, -0.856655, -1.71119, -0.781533, -1.7, -0.700353),
+]
+# Filled silk triangle beside pad 1 -- the LED's polarity marker. Also
+# missing from the pre-fix re-render.
+SK6812_PIN1_TRIANGLE = [(-2.725, -1.45), (-2.575, -1.65), (-2.875, -1.65)]
+
+
+def _fppoly(pts, layer, w=0.12, fill="yes"):
+    """A filled footprint polygon. gm has no fp_poly helper (nothing on its
+    own boards needs one); same shape as its fpline()/fprect()."""
+    p = " ".join(f"(xy {x:g} {y:g})" for x, y in pts)
+    key = ("poly", layer) + tuple(c for xy in pts for c in xy)
+    return (f'    (fp_poly (pts {p}) (stroke (width {w}) (type solid)) '
+            f'(fill {fill}) (layer "{layer}") (uuid "{gm.NU(*key)}"))')
+
+
+def _fptext(kind, txt, x, y, layer, size=0.8, thickness=0.15, mirror=False):
+    """A silkscreen/fab text item inside a footprint. gm emits footprint text
+    only via fp_header()'s Reference/Value properties; these are extra,
+    non-property labels (the BAT+/BAT- polarity marks)."""
+    just = " (justify mirror)" if mirror else ""
+    return (f'    (fp_text {kind} "{txt}" (at {x:g} {y:g}) (layer "{layer}") '
+            f'(uuid "{gm.NU("txt", layer, txt, x, y)}")\n'
+            f'      (effects (font (size {size:g} {size:g}) '
+            f'(thickness {thickness:g})){just})\n    )')
+
+
+def _rect_as_lines(x1, y1, x2, y2, layer, w):
+    """A rectangle drawn as four fp_line segments rather than one fp_rect.
+
+    Geometrically identical, and this project's parity test treats the two
+    spellings as equal -- but KiCad's own "footprint does not match copy in
+    library" check does NOT: it compares objects, so a board instance built
+    from gm.fprect() reads as different from a library master that spells the
+    same rectangle as four fp_lines, and every XIAO/EC11 instance drew a
+    lib_footprint_mismatch warning the moment the library was registered and
+    actually resolvable. The two hand-drawn masters are the authored source
+    for those footprints (they are what the pre-order 1:1 print gate exists
+    to check), so the re-render conforms to them, not the other way round.
+    """
+    corners = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+    return [gm.fpline(*corners[i], *corners[(i + 1) % 4], layer, w)
+            for i in range(4)]
+
 
 def _fp_sk6812mini_tb(ref, x, y, path_uuid, pinnet):
     """SK6812MINI-E, reverse-mount, back side. pinnet keys are footprint pad
-    numbers (1=VDD, 2=DOUT, 3=GND, 4=DIN, per PAD_MAP)."""
+    numbers (1=VDD, 2=DOUT, 3=GND, 4=DIN, per PAD_MAP).
+
+    Element order below matches the library master's: pads, silk, pin-1
+    triangle, Edge.Cuts window, courtyard, fab, 3D model."""
     s = gm.fp_header(_fp("SK6812MINI_E"), ref, "SK6812MINI-E", x, y, 180,
                       layer="B.Cu", attr="smd", ref_at=(0, 2.6), val_at=(0, -2.54),
                       path_uuid=path_uuid)
@@ -562,6 +663,11 @@ def _fp_sk6812mini_tb(ref, x, y, path_uuid, pinnet):
     b.append(gm.fpline(-3.65, 1.875, 3.65, 1.875, "B.SilkS"))
     b.append(gm.fpline(-3.65, -1.15, -2.925, -1.875, "B.SilkS"))
     b.append(gm.fpline(-3.65, -1.15, -3.65, 1.875, "B.SilkS"))
+    b.append(_fppoly(SK6812_PIN1_TRIANGLE, "B.SilkS"))
+    for x1, y1, x2, y2 in SK6812_WINDOW_LINES:
+        b.append(gm.fpline(x1, y1, x2, y2, "Edge.Cuts"))
+    for sx, sy, mx, my, ex, ey in SK6812_WINDOW_ARCS:
+        b.append(gm.fparc(sx, sy, mx, my, ex, ey, "Edge.Cuts"))
     b.append(gm.fprect(-3.65, 1.87, 3.65, -1.87, "B.CrtYd", 0.05))
     b.append(gm.fpline(-0.8, -1.4, -1.6, -0.6, "B.Fab"))
     b.append(gm.fprect(-1.6, 1.4, 1.6, -1.4, "B.Fab"))
@@ -577,8 +683,8 @@ def _fp_xiao_headers(ref, x, y, path_uuid, pinnet):
                       layer="F.Cu", attr="through_hole",
                       ref_at=(0, -12), val_at=(0, 12), path_uuid=path_uuid)
     b = []
-    b.append(gm.fprect(-8.75, -10.5, 8.75, 10.5, "F.Fab"))
-    b.append(gm.fprect(-10.2, -10.5, 10.2, 10.5, "F.SilkS", 0.12))
+    b.extend(_rect_as_lines(-8.75, -10.5, 8.75, 10.5, "F.Fab", 0.1))
+    b.extend(_rect_as_lines(-10.2, -10.5, 10.2, 10.5, "F.SilkS", 0.12))
     ys = [-7.62, -5.08, -2.54, 0, 2.54, 5.08, 7.62]
     for i, py in enumerate(ys):
         num = i + 1
@@ -599,10 +705,17 @@ def _fp_ec11_vertical(ref, x, y, path_uuid, pinnet):
     per the schematic's EC11_tb pin order)."""
     s = gm.fp_header(_fp("EC11_VERTICAL"), ref, "EC11 (VERIFY before fab)", x, y, 0,
                       layer="F.Cu", attr="through_hole",
-                      ref_at=(0, -8), val_at=(0, 8), path_uuid=path_uuid)
+                      # ref at -9, not -8: at -8 the "ENC1" designator lands
+                      # inside RGB3's Edge.Cuts light window (this key IS the
+                      # encoder position, and its LED sits 6.025mm north), so
+                      # it would be printed over a milled opening and not
+                      # exist on the finished board. Text placement only --
+                      # no pad, hole or courtyard geometry changes, so the
+                      # pre-order 1:1 print gate is unaffected.
+                      ref_at=(0, -9), val_at=(0, 8), path_uuid=path_uuid)
     b = []
-    b.append(gm.fprect(-6, -6, 6, 6, "F.Fab"))
-    b.append(gm.fprect(-7.7, -6.5, 7.7, 6.5, "F.SilkS", 0.12))
+    b.extend(_rect_as_lines(-6, -6, 6, 6, "F.Fab", 0.1))
+    b.extend(_rect_as_lines(-7.7, -6.5, 7.7, 6.5, "F.SilkS", 0.12))
     for num, px, py, shape in [(1, -2.5, 3.25, "rect"), (2, 0, 3.25, "circle"),
                                 (3, 2.5, 3.25, "circle"), (4, -2.5, -3.25, "circle"),
                                 (5, 2.5, -3.25, "circle")]:
@@ -902,8 +1015,21 @@ def build_pcb():
                 # real pin/leg obstacles via _cap_offsets_near(), not
                 # hand-picked -- front side (same side as ENC1 and the
                 # XIAO trace they decouple, no extra via).
-                debounce_xy = _cap_offsets_near(["C10", "C11"], enc_obstacles, 0, 0,
-                                                max_dist=9.0)
+                # ...plus this key's own LED courtyard. Found by DRC once the
+                # Edge.Cuts light window existed: this search knew about the
+                # EC11's pins and body but not about RGB3, and put C10's pad
+                # exactly on top of RGB3's window -- 0.00mm copper-to-edge,
+                # i.e. a pad that the router would have cut in half. The
+                # generator's own overlap scan could not see it either,
+                # because C10 and RGB3 share matrix position (0, 2) and
+                # _expected_overlap_tb() declares same-position overlaps
+                # expected (front-side cap over a back-side LED normally IS
+                # fine -- it stops being fine when the LED brings a hole with
+                # it). Same obstacle the per-LED cap search already used.
+                debounce_xy = _cap_offsets_near(
+                    ["C10", "C11"],
+                    enc_obstacles + [("rect", 0, LED_OFFSET_Y, 3.65 * 2, 1.87 * 2)],
+                    0, 0, max_dist=9.0)
                 for debounce, (ddx, ddy) in debounce_xy.items():
                     dcx, dcy = kx + ddx, ky + ddy
                     fps.append(gm.fp_0603(debounce, "100n", dcx, dcy, 0,
