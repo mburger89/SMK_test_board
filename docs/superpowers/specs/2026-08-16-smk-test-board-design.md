@@ -143,9 +143,13 @@ defect to fix here — the keyboard project carries the same note.
 ## 4. Power and battery
 
 USB-C on the XIAO powers the board when tethered. For untethered BLE testing,
-a single-cell Li-ion connects through a JST-PH 2-pin connector (`J1`) on the
-PCB, which feeds the board's VSYS rail; the XIAO's onboard charger handles
-charging.
+a single-cell Li-ion connects through a JST SH 2-pin connector, 1.0 mm pitch
+(`J1`) on the PCB, which feeds the board's VSYS rail; the XIAO's onboard
+charger handles charging. **Correction:** this used to say "JST-PH", which
+is a different, 2.0 mm-pitch part; the footprint on the board
+(`JST_SH_SM02B_2pin_Back`) has always been SH. See `docs/fabrication.md`'s
+BOM note — a Li-ion pouch cell's common JST-PH pigtail will not mate with
+this connector.
 
 VSYS reaches the XIAO through **`J2`, a labelled 2-pin through-hole pad pair**
 beside `U1`, and two short flying leads hand-soldered from it to the module's
@@ -258,7 +262,8 @@ included.
 
 To source: 9 × SK6812MINI-E, 9 × Gateron KS-33 hot-swap sockets, 1 × level
 shifter for the LED data line (same part the keyboard project uses), 2 × 1×7
-female headers, 1 × JST-PH 2-pin connector, **12 × 100 nF** capacitors (9 for
+female headers, 1 × JST SH 2-pin connector (1.0 mm pitch, **not** JST-PH),
+**12 × 100 nF** capacitors (9 for
 LED decoupling, 2 for encoder debounce, 1 for the level shifter U2's own VCC),
 1 × 100 µF bulk capacitor at the LED
 chain entry, 2 × 200 kΩ resistors (the VBAT sense divider, §4), 4 × **M2**

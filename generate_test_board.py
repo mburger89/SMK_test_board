@@ -359,8 +359,13 @@ def build_lib_symbols():
                              ("1", "1"), ("2", "2")))
 
     # --- 2-pin JST battery connector (footprint pads already 1/2) ---
+    # JST SH (1.0mm pitch), matching JST_SH_SM02B_2pin_Back below -- this
+    # used to say "JST-PH-2" (2.0mm pitch, a different and incompatible
+    # part) while the footprint underneath it was always SH. See
+    # docs/fabrication.md's BOM note on the two connectors being
+    # non-interchangeable.
     jst_body = '        (rectangle (start -2.54 2.54) (end 2.54 -2.54) (stroke (width 0.254) (type default)) (fill (type none)))\n'
-    L.append(_two_pin_named("Conn_JST2_tb", "J", "JST-PH-2", jst_body,
+    L.append(_two_pin_named("Conn_JST2_tb", "J", "JST-SH-2", jst_body,
                              ("1", "1"), ("2", "2")))
 
     # --- battery flying-lead pad pair (footprint pads already 1/2) ---
@@ -615,7 +620,7 @@ def build_sch():
 
     # ================================================ POWER ============
     jx, jy = 40.64, 238.76
-    parts.append(gm.sym_inst("Conn_JST2_tb", "J1", "JST-PH-2 (battery)",
+    parts.append(gm.sym_inst("Conn_JST2_tb", "J1", "JST-SH-2 (battery)",
                               jx, jy, 0, ["1", "2"], _fp("JST_SH_SM02B_2pin_Back")))
     attach(net_on("J1", "1"), jx - 3.81, jy, "L")
     attach(net_on("J1", "2"), jx + 3.81, jy, "R")

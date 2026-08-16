@@ -85,13 +85,24 @@ From the design spec §8 (`docs/superpowers/specs/2026-08-16-smk-test-board-desi
 | 9 | Gateron KS-33 hot-swap sockets | |
 | 1 | Level shifter, LED data line | **SN74AHCT1G125DBVR**, SOT-23-5 — same part `~/esp/SMK_Keyboard`'s RP2040 board uses (its U7), LCSC **C7484**. This board's schematic already carries it as U2. |
 | 2 | 1x7 female headers | for the XIAO module |
-| 1 | JST-PH 2-pin connector | battery |
+| 1 | JST SH 2-pin connector, 1.0 mm pitch (SM02B-SRSS-TB or equivalent) | battery — **not JST-PH**, see note below |
 | 12 | 100 nF capacitors | 9 for LED decoupling (one per RGB, C1–C9), 2 for encoder debounce (C10/C11), 1 for the level shifter U2's own VCC (C12) |
 | 1 | 100 µF bulk capacitor | LED chain entry (C_BULK) |
 | 2 | 200 kΩ resistors, 0603 | **R1/R2, the VBAT sense divider** — VSYS → R1 → midpoint → R2 → GND, midpoint on U1 pad 1 (D0 / GPIO0 / ADC1_CH0). Not optional: without them U1 pad 1 floats and firmware reads garbage as a battery voltage. 200 k (not 100 k/10 k) keeps the standing drain at ~10 µA on a 4.2 V cell. |
 | — | 2 short lengths of insulated wire | **Battery flying leads.** Soldered from `J2` (the through-hole pad pair silkscreened `BAT+`/`BAT-` beside U1) to the XIAO module's **underside** BAT+/BAT− solder pads. `J2` itself needs no part — it is two plated holes — but the assembly step is mandatory and is the *only* path from the JST connector to the module. See `docs/bring-up.md` step 1b-ii. |
 | 4 | **M2** standoffs/screws | mounting; the board's four corner holes are 2.4 mm NPTH (`MountingHole_M2`). This line said "M3" and the design spec's §5 said "4 × M3 at the corners"; both were wrong against the board and are corrected. |
 | — | Low-profile keycaps | 9x, to fit Gateron KS-33 |
+
+> **Battery connector pitch — read before ordering a cell.** The board's
+> battery connector is **JST SH, 1.0 mm pitch**, not the more common
+> JST-PH (2.0 mm). Single-cell Li-ion pouch cells are very commonly sold
+> with a **JST-PH 2.0 mm** pigtail pre-attached — that pigtail will
+> **physically not mate** with this board's SH connector; the two are
+> different, incompatible parts, not a tolerance issue. Before ordering a
+> cell, do one of: (a) source a cell with a JST-SH 1.0 mm pigtail, (b) buy
+> a JST-PH-to-JST-SH adapter cable, or (c) buy a cell with flying leads (or
+> a PH pigtail) and re-terminate it onto an SH connector yourself. Getting
+> this wrong is a several-day reorder, not a rework.
 
 **Not on this board:** the "2 × 10 kΩ resistors (encoder pull-ups)" this BOM
 used to list, and the design spec §2 line calling them "footprinted but may

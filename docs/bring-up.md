@@ -52,7 +52,7 @@ damage the XIAO the moment it's powered, and there is no way to undo that.
 
 - [ ] **1b. VSYS–GND continuity.** Multimeter in continuity/low-resistance
   mode, board unpowered, XIAO **not yet seated**. Probe VSYS to GND at
-  `J1` (the JST-PH battery connector) or at **`J2`, the two through-hole
+  `J1` (the JST SH battery connector) or at **`J2`, the two through-hole
   pads silkscreened `BAT+` / `BAT-` beside `U1`** — `J2` pin 1 (`BAT+`,
   the square pad) is VSYS, pin 2 (`BAT-`) is GND. Do not look for a VSYS
   pad on the XIAO footprint: there isn't one and there can't be, because
@@ -439,7 +439,7 @@ rough single-cell Li-ion approximation, not a calibrated discharge curve —
 don't expect a precise number, but a **stable, plausible, slowly-falling**
 one.
 
-- [ ] **10a. Connect a charged single-cell Li-ion to the JST-PH connector,
+- [ ] **10a. Connect a charged single-cell Li-ion to the JST SH connector,
   unplug USB, and run untethered.** Confirm the board still functions
   (matrix/BLE) on battery alone.
 
