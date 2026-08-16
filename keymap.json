@@ -1,11 +1,11 @@
 {
   "matrix": { "rows": [1, 2, 21], "cols": [22, 23, 16], "colsAreDriven": 1 },
   "layers": [
-    [["key:1", "key:2", "key:3"],
-     ["key:4", "key:5", "key:6"],
-     ["key:7", "key:8", "mo:1"]],
-    [["key:f1", "key:f2", "key:f3"],
-     ["key:f4", "key:f5", "key:f6"],
-     ["key:f7", "key:f8", "trans"]]
+    [["key:1", "key:2", "mo:1"],
+     ["key:3", "key:4", "key:5"],
+     ["key:6", "key:7", "key:8"]],
+    [["key:f1", "key:f2", "trans"],
+     ["key:f3", "key:f4", "key:f5"],
+     ["key:f6", "key:f7", "key:f8"]]
   ]
 }

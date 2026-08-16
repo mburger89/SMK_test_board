@@ -15,7 +15,7 @@ Board reference: `docs/superpowers/specs/2026-08-16-smk-test-board-design.md`.
 Fabrication reference: `docs/fabrication.md`. Firmware: `~/esp/SMK`
 branch `test-board-config` (commit 171f67c). Configurator: `~/esp/smk_configurator`
 branch `test-board-design` (commit dfd84da). Reference keymap: `keymap.json`
-in this repo (commit 610cb87).
+in this repo.
 
 Every checkbox below has a blank **Result** line. This document was written
 without hardware in hand — nothing in it has been run. Fill in each result
@@ -111,17 +111,31 @@ damage the XIAO the moment it's powered, and there is no way to undo that.
 
   Result: ______________________________________________
 
-- [ ] **3b. Two-Mac bonding needs `CONFIG_BT_NIMBLE_MAX_BONDS = 4`, and the
-  tracked defaults don't set it.** `sdkconfig.defaults` (the file that
-  seeds a fresh `sdkconfig` when none exists) carries
-  `CONFIG_BT_NIMBLE_MAX_BONDS=1`, not 4 — the design spec's §9 check 8
-  wants 4, matching this repo's own working (but gitignored, machine-local)
-  `sdkconfig`. If you're building from a fresh clone, or after
-  `idf.py fullclean`, check this explicitly:
-  **Component config → Bluetooth → NimBLE Options → General → "Maximum
-  number of bonds to save across reboots"** should read **4**. If it's not,
-  set it now — Step 11 (two-Mac bonding) will otherwise fail for a config
-  reason that has nothing to do with this board's hardware.
+- [ ] **3b. Check whether this build actually supports two bonded hosts —
+  Step 11 depends on it, and it is not this branch's job to fix.**
+  `test-board-config`'s `sdkconfig.defaults` carries
+  `CONFIG_BT_NIMBLE_MAX_BONDS=1`. The `=4` that Step 11 (two-Mac bonding)
+  needs lives on the separate, unmerged `ble-custom-gatt` branch
+  (`git show ble-custom-gatt:sdkconfig.defaults`) — this is not a defect on
+  `test-board-config` to patch here, it resolves whenever that branch
+  merges (or you build from it directly). **Do not set this via
+  `idf.py menuconfig`** — that write lands only in the gitignored,
+  machine-local `sdkconfig` and silently reverts on the next clean
+  checkout, which is exactly how someone ends up chasing a "bonding
+  failure" that isn't a hardware problem at all.
+
+  Instead, check what you actually built, after `idf.py build` has
+  generated a real `sdkconfig`:
+
+  ```bash
+  grep CONFIG_BT_NIMBLE_MAX_BONDS ~/esp/SMK/sdkconfig
+  ```
+
+  If it reads `=1`, Step 11 is expected to fail — pairing a second Mac
+  will evict the first from the (single-slot) bond store rather than both
+  coexisting, which is a build-configuration gap, not a board defect. Note
+  which branch/commit you actually built from here so Step 11's result is
+  interpretable.
 
   Result: ______________________________________________
 
@@ -187,41 +201,29 @@ The compiled-in default keymap from Step 4 has no layers at all — one flat
 exercised without uploading a keymap that has them first. That upload is
 what the rest of this step walks through.
 
-**Known issue in the shipped reference keymap — read before wiring up your
-expectations.** `keymap.json`'s `mo:1` binding sits at grid position **row
-2 / col 2** — an ordinary Gateron switch, ordinary switch `SW22` in the
-generator's own naming, two rows away from the encoder. It is **not** on
-the encoder's push-switch (row 0 / col 2, see Step 4a). Concretely, as
-shipped:
+`keymap.json` puts `mo:1` on the encoder's push-switch itself — grid
+position **row 0 / col 2**, the same position Step 4a confirmed is the
+encoder — so holding the encoder press is expected to change layers, and
+the other 8 (ordinary Gateron) keys should show layer 1's values while it's
+held. Layer 1 mirrors layer 0's grid with `f1`–`f8` in place of `1`–`8`,
+and keeps `trans` at row 0 / col 2 so the encoder key falls through to its
+own `mo:1` rather than shadowing it. **Rotation still does nothing** —
+nothing in this firmware build reads GPIO17/GPIO19 (see Step 4a) — so
+turning the knob while testing this is not a failure, only pressing it is
+relevant here.
 
-- Layer 0, row 0 (`key:1`, `key:2`, `key:3`) — col 2 here (`key:3`) is the
-  encoder's physical position. Pressing the encoder with this keymap
-  loaded just types "3"; it does not touch layers.
-- Layer 0, row 2 (`key:7`, `key:8`, `mo:1`) — col 2 here is an ordinary
-  switch. **This** is the key that momentarily switches to layer 1.
-- Layer 1 mirrors layer 0's grid with `f1`–`f8` in place of `1`–`8`, and
-  `trans` at row 2 / col 2 (falls through to layer 0's `mo:1`, so holding
-  that key behaves consistently whichever layer you're viewing it from).
-
-This is a defect in the reference file (Task 9's board deliverable,
-`keymap.json` commit 610cb87), not a hardware fault — it's flagged here
-rather than fixed, since this document is documentation-only and
-`keymap.json` is out of this task's scope to edit. Test layers against the
-key that's **actually** bound (row 2 / col 2), not the encoder, and don't
-read "the encoder doesn't change layers" as a board failure — per the
-wiring above, it was never supposed to.
-
-`keymap.json` also has no `tg:` binding at all (design spec §9 check 2
-wants both `mo:` and `tg:` verified). Add one as part of the same upload:
+`keymap.json` has no `tg:` binding at all (design spec §9 check 2 wants
+both `mo:` and `tg:` verified). Add one as part of the same upload, on an
+ordinary key well away from the encoder:
 
 - [ ] **5a. Load and edit the reference keymap.** In the configurator, File
   → Open `~/esp/SMK_test_board/keymap.json`. Its matrix (`rows: [1,2,21]`,
   `cols: [22,23,16]`, `colsAreDriven: 1`) matches `KeyboardDesign
   .smkTestBoard` exactly, so the app should auto-select that design — the
   key grid should render as a labeled 3×3, not a generic/unlabeled
-  fallback. Remap the **row 2 / col 1** key (currently `key:8` on layer 0)
-  to `tg:1`. Leave everything else as-is, including the row 2 / col 2
-  `mo:1` binding described above.
+  fallback. Remap the **row 2 / col 2** key (currently `key:8` on layer 0)
+  to `tg:1`. Leave everything else as-is, including the row 0 / col 2
+  `mo:1` binding on the encoder.
 
   Result: ______________________________________________
 
@@ -231,14 +233,15 @@ wants both `mo:` and `tg:` verified). Add one as part of the same upload:
 
   Result: ______________________________________________
 
-- [ ] **5c. `mo:` while held.** Hold the row 2 / col 2 key. Confirm the
+- [ ] **5c. `mo:` while held.** Hold the encoder's push-switch down (row 0
+  / col 2 — press straight down on the knob, don't turn it). Confirm the
   other 8 keys emit `F1`–`F8` (per `keymap.json`'s layer 1) while it's
-  held, and revert to `1`,`2`,`3`,`4`,`5`,`6`,`7` (layer 0) the instant you
-  release it — no lag, no stuck layer.
+  held, and revert to their layer-0 values the instant you release it —
+  no lag, no stuck layer.
 
   Result: ______________________________________________
 
-- [ ] **5d. `tg:` latching.** Press and release the row 2 / col 1 key once
+- [ ] **5d. `tg:` latching.** Press and release the row 2 / col 2 key once
   (the `tg:1` you just added). Confirm the board **stays** on layer 1 —
   the other keys now emit `F1`–`F8` without anything held down. Press the
   same key again and confirm it toggles back to layer 0.
@@ -426,9 +429,13 @@ one.
 
 ## Step 11 — Two-Mac bonding
 
-Depends on Step 3b (`CONFIG_BT_NIMBLE_MAX_BONDS = 4`) actually being set in
-the build you flashed — if you skipped that check, confirm it now before
-concluding this step failed on hardware.
+Depends on Step 3b's check (`CONFIG_BT_NIMBLE_MAX_BONDS` in the build you
+actually flashed). If that came back `=1` (the `test-board-config` default,
+pending the unmerged `ble-custom-gatt` branch), **this step is expected to
+fail** — pairing a second Mac evicts the first rather than both coexisting.
+That is a build-configuration gap this branch inherits, not a result to
+record against this board's hardware. Only treat a failure here as a real
+finding if Step 3b's check came back `=4`.
 
 - [ ] **11a. Pair to a first Mac**, confirm typing works (as in Step 6).
 
@@ -458,7 +465,7 @@ concluding this step failed on hardware.
 |---|---|---|
 | 1. Visual + continuity | | |
 | 2. Seat + power | | |
-| 3. Flash (test board Kconfig + bond count) | | |
+| 3. Flash (test board Kconfig + bond-count check) | | |
 | 4. Matrix (9 positions, no ghosting) | | |
 | 5. Layers (`mo:`, `tg:`) | | |
 | 6. BLE HID typing | | |
