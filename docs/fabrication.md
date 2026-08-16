@@ -152,7 +152,7 @@ Every moved number is accounted for below; none of it is rounding.
 | `silk_over_copper` | 37 | **38** | warning | **No** | +1 net: −2 (C10 moved off ENC1's reference field, see the `copper_edge_clearance` note) and +3 new (R1's designator over R2's two pads; U2's designator over C12's GND pad). Same root cause as the existing 35: reference-designator text on a dense board clipping a neighbour's soldermask opening. Cosmetic on a fixture assembled by the person who designed it. |
 | `silk_overlap` | 36 | **38** | warning | **No** | +2 net: −2 (ENC1 ref vs C10's silk; ENC1's silk rect vs C11's ref — both cleared when C10/C11 moved) and +4 new (C10 and C11 designators against ENC1's silk envelope at their new position, U2's designator against C12's silk, R1's designator against R2's silk). Silk-on-silk crowding; no copper, mask or paste consequence. |
 | `silk_edge_clearance` | 0 | **1** | warning | **No** | New, and a direct consequence of milling the LED light windows: at row 0 / col 2 the EC11 shares its matrix cell with RGB3, so ENC1's silkscreen envelope now crosses RGB3's window. Two instances were introduced; one was fixed by moving ENC1's reference designator from y=−8 to y=−9 in the footprint (text placement only — no pad, hole or courtyard change, so the 1:1 print gate is unaffected). The remaining one is ENC1's silk *rectangle* edge, which cannot move without shrinking the envelope below the encoder's real body-plus-posts extent. Silk printed over a milled opening simply isn't printed; nothing electrical. |
-| `copper_edge_clearance` | 0 | **0** | error | **No** | Zero, but it did not start that way and the story matters. Adding the Edge.Cuts windows put 38 copper-to-edge violations on the board. **Two of them were a real defect**: C10, the encoder's debounce cap, had a pad sitting at 0.00 mm from RGB3's window — copper the router would have cut in half. The generator's cap-placement search knew about the EC11's pins and body but not about the LED, and the generator's own overlap scan could not see it either, because C10 and RGB3 share matrix position (0,2) and same-position overlaps are declared expected. Fixed by adding the LED's courtyard to that search. The other 36 are each SK6812MINI-E pad against **its own** light window at 0.2467 mm, which is what the stock KiCad `LED_SK6812MINI-E_3.2x2.8mm_P1.5mm_ReverseMount` footprint measures, used unmodified — the same footprint the sibling `~/esp/SMK_Keyboard/smk_kbd_rp2040` board has fabricated 58 times. The project rule is set to 0.2 mm accordingly. **See the ordering checklist: this is the one clearance on the board an operator must confirm against the fab's current capability.** |
+| `copper_edge_clearance` | 0 | **0** | error | **No** | Zero, but it did not start that way and the story matters. Adding the Edge.Cuts windows put 38 copper-to-edge violations on the board. **Two of them were a real defect**: C10, the encoder's debounce cap, had a pad sitting at 0.00 mm from RGB3's window — copper the router would have cut in half. The generator's cap-placement search knew about the EC11's pins and body but not about the LED, and the generator's own overlap scan could not see it either, because C10 and RGB3 share matrix position (0,2) and same-position overlaps are declared expected. Fixed by adding the LED's courtyard to that search. The other 36 are each SK6812MINI-E pad against **its own** light window at 0.2467 mm, which is what the stock KiCad `LED_SK6812MINI-E_3.2x2.8mm_P1.5mm_ReverseMount` footprint measures, used unmodified — the same footprint the sibling `~/esp/SMK_Keyboard/smk_kbd_rp2040` board carries **59** instances of, at this same clearance, and has fabricated successfully. The project's `.kicad_pro` sets `min_copper_edge_clearance = 0.2 mm`, below the real clearance, specifically so this reads as zero errors — that is a **relaxed rule, not a passing check**; it silences the report, it does not mean the clearance is generous. **See the ordering checklist for the number and the precedent an operator actually confirms before proceeding.** |
 | `text_height` | 0 | **0** | warning | **N/A** | Appeared briefly (2) when J2's `BAT+`/`BAT-` silk was drawn at 0.8 mm, below the project's own silk-text floor; the labels are 1.0 mm and it is back to zero. |
 
 **Why `unconnected_items` is not a blocker.** This board ships ratsnest-only,
@@ -160,12 +160,36 @@ exactly like its `~/esp/SMK_macro_pad` siblings. Routing copper is out of
 scope for this fab order; JLCPCB fabs whatever copper/drill data is in the
 Gerbers, and there is none pending beyond what's placed.
 
-**On the copper-to-edge exception.** KiCad measures to the *outer edge* of the
-0.12 mm-wide `Edge.Cuts` graphic; the gap from LED pad to the **nominal cut
-path** the router actually follows is 0.3067 mm. That is the number to compare
-against a fab's published copper-to-slot capability. It cannot be improved
-without redrawing the SK6812MINI-E footprint, which would mean redrawing the
-light window it exists for.
+**On the copper-to-edge number.** This document used to claim KiCad measures
+to the *outer edge* of the 0.12 mm-wide `Edge.Cuts` graphic, and that the gap
+to the **nominal cut path** the router actually follows is **0.3067 mm** —
+"the number to compare against a fab's published copper-to-slot capability."
+That is false, and was disproved directly: widening every Edge.Cuts stroke on
+the window from 0.12/0.15 mm to 0.4 mm changed the reported DRC clearances
+**not at all** (still 3 × 0.2467, 1 × 0.2468, 3 × 0.3154, 29 × 0.3500 mm).
+KiCad's copper-to-edge check ignores `Edge.Cuts` stroke width entirely —
+**0.2467 mm, as KiCad reports it, is already the copper-to-centreline
+number**, not a figure that needs a stroke-width correction added on top.
+Reconstructing the corner arcs exactly (r = 0.5 mm, centres at footprint-local
+±(1.3171, 1.1171) mm) puts the true minimum tighter still, at **≈0.2329 mm**:
+pad 1's edge at local x = −2.05 mm against the arc's leftmost point at
+x = −1.8171 mm.
+
+The basis for proceeding is not "0.2467 mm (or 0.2329 mm exact) happens to
+clear some fab's published number" — a fab spec is worth checking but isn't
+what justifies this board. The basis is precedent: the sibling board
+`~/esp/SMK_Keyboard/smk_kbd_rp2040` carries **59** instances of this exact
+SK6812MINI-E footprint at this same 0.2467 mm clearance and was fabricated
+successfully. That is what licenses fabricating this one too.
+
+The project's `.kicad_pro` sets `min_copper_edge_clearance = 0.2 mm`, below
+both numbers above, specifically so DRC reports zero `copper_edge_clearance`
+errors here. That is a **relaxed rule, not a passing check**: it turns down
+the check that would otherwise flag this clearance, it does not mean the
+clearance is comfortable. A green DRC run must not be read as "no tight
+clearance exists." None of this can be improved without redrawing the
+SK6812MINI-E footprint, which would mean redrawing the light window it exists
+for.
 
 **Known cosmetic limitation, row 0 / col 2.** The EC11's 12 × 12 mm body sits
 over roughly the southern half of RGB3's light window (the window spans
@@ -234,21 +258,33 @@ gerbers/
 4. `kicad-cli pcb drc --severity-error` — should show **16 violations / 94
    unconnected**, all triaged above as non-blocking. Any *new* error
    category is a real regression; stop and investigate before ordering.
-5. **Confirm the fab's copper-to-slot/outline capability covers 0.25 mm.**
-   The nine SK6812MINI-E light windows sit 0.2467 mm from their own LED
-   pads as KiCad measures it (0.3067 mm to the nominal cut path). This is
-   the single tightest clearance on the board and the only one that is not
-   comfortably inside standard capability. It is inherent to the stock
-   reverse-mount footprint and the same geometry the sibling RP2040
-   keyboard has already fabricated 58 times — but confirm it against the
-   fab's *current* published spec rather than taking that on faith.
+5. **Confirm the tightest clearance on the board against precedent, not
+   against "it happens to clear a fab spec."** The nine SK6812MINI-E light
+   windows sit **0.2467 mm** from their own LED pads as KiCad measures it
+   (**≈0.2329 mm** exact, reconstructing the corner arcs — KiCad's own
+   figure is already the copper-to-centreline number; there is no separate
+   "nominal cut path" figure to add on top, despite what an earlier
+   revision of this document claimed). This is the single tightest
+   clearance on the board, and the project's `.kicad_pro` relaxes
+   `min_copper_edge_clearance` to 0.2 mm specifically so DRC doesn't flag
+   it — that is a relaxed rule, not evidence the clearance is comfortable.
+   What actually justifies proceeding: the sibling
+   `~/esp/SMK_Keyboard/smk_kbd_rp2040` board carries **59** instances of
+   this exact stock reverse-mount footprint at this same 0.2467 mm
+   clearance and has been fabricated successfully. Confirm that precedent
+   still holds (nothing about this footprint changed since) and, as a
+   secondary check, that it's also within the fab's *current* published
+   copper-to-slot capability.
 6. **Confirm `gerbers/smk_test_board-Edge_Cuts.gm1` contains the nine LED
-   windows**, not just the board outline: `grep -c "Edge.Cuts"
-   smk_test_board/smk_test_board.kicad_pcb` must be **182** (1 layer
-   declaration + 1 board outline + 9 LEDs × 20 primitives). These are
-   reverse-mount LEDs shining *through* the board; with no windows they do
-   nothing, and it is not reworkable after fab. This is the exact defect
-   that reached this checklist once already.
+   windows**, not just the board outline: `grep -cE '^G0[23]\*$'
+   gerbers/smk_test_board-Edge_Cuts.gm1` must be **108** (9 LEDs × 12 arcs
+   per window). These are reverse-mount LEDs shining *through* the board;
+   with no windows they do nothing, and it is not reworkable after fab.
+   This is the exact defect that reached this checklist once already — an
+   earlier revision of this step gave a command that grepped
+   `smk_test_board.kicad_pcb` (the source file) rather than the gerber
+   actually being confirmed, so it could pass without checking what the
+   step claims to check.
 7. `python3 export_fab.py` — regenerates `gerbers/` and the zip fresh from
    the current board file. Cross-check `gerbers/drill-report.txt`: **21
    plated / 30 unplated** holes.
