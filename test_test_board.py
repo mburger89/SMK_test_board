@@ -275,29 +275,63 @@ def test_level_shifter_has_local_decoupling():
 
 
 def test_back_side_passives_are_all_nonpolar():
-    """gm.fp_0603(side="B") mirrors a footprint about the Y axis (x -> -x)
-    where KiCad's own flip-to-back mirrors about the X axis (y -> -y). The
-    two differ by a 180-degree rotation, which is why every back-side 0603 on
+    """gm.fp_0603(side="B") (and gm's other side="B"-capable helpers --
+    fp_sot23_5/fp_sot23/fp_btn6mm/fp_swd_header/fp_rp2040/fp_flash8/
+    fp_crystal_smd) mirrors a footprint about the Y axis (x -> -x) where
+    KiCad's own flip-to-back mirrors about the X axis (y -> -y). The two
+    differ by a 180-degree rotation, which is why every back-side 0603 on
     this board draws a `lib_footprint_mismatch` DRC warning.
 
-    For a symmetric 0603 the copper, mask, paste, silk and fab geometry are
+    For a symmetric part the copper, mask, paste, silk and fab geometry are
     identical either way -- only which pad is numbered 1 changes. That is
     harmless for a non-polar part and WRONG for a polarised one (an LED, a
     tantalum, a diode), which would end up reversed on the board with nothing
     but a warning to say so.
 
     generate_macropad.py is shared with four other generated boards, so the
-    convention is not changed here. This is the guard instead: every part this
-    board places back-side through that helper must be non-polar.
+    convention is not changed here. This is the guard instead -- and it used
+    to only iterate tb.AUX_PARTS and require fpname == "RC_0603", so a
+    polarised part placed back-side outside AUX_PARTS (or through the same
+    mismatched helper under a different footprint name) would slip past
+    silently. Widened to walk every footprint the generated PCB actually
+    places on the back, parsed straight out of build_pcb()'s own text rather
+    than any hand-maintained dict, so nothing new placed back-side escapes
+    this check regardless of how it got there.
     """
+    # Footprints hand-authored directly on B.Cu for exactly this purpose --
+    # SW_Gateron_KS33_HS, D_SOD-123_Back, SK6812MINI_E and
+    # JST_SH_SM02B_2pin_Back are each drawn (gm.fp_gateron/fp_diode/
+    # fp_jst_sh, and this board's own _fp_sk6812mini_tb) with their own
+    # correct back-side pad numbering, never passed through gm's generic
+    # side="B" mirror helper. The X-vs-Y mirror mismatch that makes a
+    # generically-mirrored polarised part risky does not apply to them, so
+    # they're exempt here even though three of the four ARE polarised.
+    DEDICATED_BACKMOUNT_FOOTPRINTS = {
+        "SW_Gateron_KS33_HS", "D_SOD-123_Back", "SK6812MINI_E",
+        "JST_SH_SM02B_2pin_Back",
+    }
     NONPOLAR_VALUES = {"100n", "100u", "200k"}   # ceramics and resistors
+
+    pcb = tb.build_pcb()
+    entries = re.findall(
+        r'\(footprint "([^"]+)"[^\n]*\n\s*\(uuid[^\n]*\n\s*\(at[^\n]*\n'
+        r'\s*\(property "Reference" "([^"]+)"[^\n]*\n[^\n]*\n[^\n]*\n'
+        r'\s*\(property "Value" "([^"]+)"',
+        pcb)
     placed = tb.placed()
-    for ref, (_x, _y, side, _rot) in placed.items():
-        if side != "B" or ref not in tb.AUX_PARTS:
+    checked = 0
+    for lib_fp, ref, value in entries:
+        _x, _y, side, _rot = placed[ref]
+        if side != "B":
             continue
-        _sym, val, fpname, _side = tb.AUX_PARTS[ref]
-        assert fpname == "RC_0603", f"{ref} is not an RC_0603"
-        assert val in NONPOLAR_VALUES, (
-            f"{ref} ({val}) is placed back-side through gm.fp_0603(side='B'), "
-            "whose mirror convention swaps pad 1 and pad 2 relative to "
-            "KiCad's own flip. That is only safe for a non-polar part.")
+        checked += 1
+        fpname = lib_fp.split(":", 1)[-1]
+        if fpname in DEDICATED_BACKMOUNT_FOOTPRINTS:
+            continue
+        assert value in NONPOLAR_VALUES, (
+            f"{ref} ({fpname}, value {value!r}) is placed back-side through "
+            "a footprint helper that mirrors about the Y axis where KiCad "
+            "mirrors about the X axis. That is only safe for a non-polar "
+            "part, and this one is recognised as neither non-polar nor a "
+            "dedicated back-mount footprint immune to the mismatch.")
+    assert checked > 0, "no back-side footprints found on the board -- parser broke"
