@@ -22,6 +22,7 @@ WHAT IS UNVERIFIED
   choice, not a defect here.
 """
 import os
+import re
 import sys
 
 _SIBLING = os.path.expanduser("~/esp/SMK_macro_pad")
@@ -507,12 +508,418 @@ def build_sch():
 '''
 
 
+# ============================================================ PCB ==========
+# Footprint-instantiation helpers for the three parts gm.py has no generator
+# for (SK6812MINI_E, XIAO_ESP32C6_HEADERS, EC11_VERTICAL). Built from gm's
+# own low-level s-expression primitives (fp_header/pad/fpline/fprect/npth/
+# model) -- "the geometry and s-expression helpers come from
+# generate_macropad.py" per this project's own module docstring -- rather
+# than hand-rolling a parallel set. Geometry matches this project's own
+# smk_test_board.pretty/*.kicad_mod byte-for-byte (those files are what
+# Tasks 1/3/4 already drew and proved); this just re-renders the same
+# numbers as a positioned PCB instance instead of an unplaced library
+# master. Every part below is placed at rot=0 (or SK6812MINI_E's fixed
+# rot=180, matching its own reverse-mount library file), so none of this
+# needs to reason about how a rotated footprint's pad-local angle composes
+# with its parent's -- gm.fp_gateron/fp_diode (called directly, unmodified,
+# for the two footprints that already have generators) are the only parts
+# of this board placed with rot != 0, and they carry their own proven
+# rotation handling.
+
+def _fp_sk6812mini_tb(ref, x, y, path_uuid, pinnet):
+    """SK6812MINI-E, reverse-mount, back side. pinnet keys are footprint pad
+    numbers (1=VDD, 2=DOUT, 3=GND, 4=DIN, per PAD_MAP)."""
+    s = gm.fp_header(_fp("SK6812MINI_E"), ref, "SK6812MINI-E", x, y, 180,
+                      layer="B.Cu", attr="smd", ref_at=(0, 2.6), val_at=(0, -2.54),
+                      path_uuid=path_uuid)
+    b = []
+    for num, px, py in [(1, -2.725, -0.75), (2, -2.725, 0.75),
+                        (3, 2.725, 0.75), (4, 2.725, -0.75)]:
+        b.append(gm.pad(num, "smd", "roundrect", px, py, 1.35, 0.82,
+                        '"B.Cu" "B.Mask" "B.Paste"', pinnet.get(num),
+                        extra=" (roundrect_rratio 0.25)"))
+    b.append(gm.fpline(3.65, 1.875, 3.65, -1.875, "B.SilkS"))
+    b.append(gm.fpline(3.65, -1.875, -2.925, -1.875, "B.SilkS"))
+    b.append(gm.fpline(-3.65, 1.875, 3.65, 1.875, "B.SilkS"))
+    b.append(gm.fpline(-3.65, -1.15, -2.925, -1.875, "B.SilkS"))
+    b.append(gm.fpline(-3.65, -1.15, -3.65, 1.875, "B.SilkS"))
+    b.append(gm.fprect(-3.65, 1.87, 3.65, -1.87, "B.CrtYd", 0.05))
+    b.append(gm.fpline(-0.8, -1.4, -1.6, -0.6, "B.Fab"))
+    b.append(gm.fprect(-1.6, 1.4, 1.6, -1.4, "B.Fab"))
+    b.append(gm.model(f"{gm.KICAD3D}/LED_SMD.3dshapes/"
+                      "LED_SK6812MINI-E_3.2x2.8mm_P1.5mm_ReverseMount.step"))
+    return s + "\n".join(b) + "\n  )\n"
+
+
+def _fp_xiao_headers(ref, x, y, path_uuid, pinnet):
+    """XIAO_ESP32C6_HEADERS: two 1x7 through-hole rows, front side. pinnet
+    keys are footprint pad numbers 1-14 (pad 1 = D0, matching XIAO silk)."""
+    s = gm.fp_header(_fp("XIAO_ESP32C6_HEADERS"), ref, "XIAO_ESP32C6", x, y, 0,
+                      layer="F.Cu", attr="through_hole",
+                      ref_at=(0, -12), val_at=(0, 12), path_uuid=path_uuid)
+    b = []
+    b.append(gm.fprect(-8.75, -10.5, 8.75, 10.5, "F.Fab"))
+    b.append(gm.fprect(-10.2, -10.5, 10.2, 10.5, "F.SilkS", 0.12))
+    ys = [-7.62, -5.08, -2.54, 0, 2.54, 5.08, 7.62]
+    for i, py in enumerate(ys):
+        num = i + 1
+        b.append(gm.pad(num, "thru_hole", "rect" if num == 1 else "circle",
+                        -8.89, py, 1.7, 1.7, '"*.Cu" "*.Mask"', pinnet.get(num),
+                        drill=1.0))
+    for i, py in enumerate(ys):
+        num = i + 8
+        b.append(gm.pad(num, "thru_hole", "circle",
+                        8.89, py, 1.7, 1.7, '"*.Cu" "*.Mask"', pinnet.get(num),
+                        drill=1.0))
+    return s + "\n".join(b) + "\n  )\n"
+
+
+def _fp_ec11_vertical(ref, x, y, path_uuid, pinnet):
+    """EC11_VERTICAL: 5 thru-hole signal pins + 2 NPTH mounting legs, front
+    side. pinnet keys are footprint pad numbers 1-5 (1=A,2=C,3=B,4=SW1,5=SW2,
+    per the schematic's EC11_tb pin order)."""
+    s = gm.fp_header(_fp("EC11_VERTICAL"), ref, "EC11 (VERIFY before fab)", x, y, 0,
+                      layer="F.Cu", attr="through_hole",
+                      ref_at=(0, -8), val_at=(0, 8), path_uuid=path_uuid)
+    b = []
+    b.append(gm.fprect(-6, -6, 6, 6, "F.Fab"))
+    b.append(gm.fprect(-7.7, -6.5, 7.7, 6.5, "F.SilkS", 0.12))
+    for num, px, py, shape in [(1, -2.5, 3.25, "rect"), (2, 0, 3.25, "circle"),
+                                (3, 2.5, 3.25, "circle"), (4, -2.5, -3.25, "circle"),
+                                (5, 2.5, -3.25, "circle")]:
+        b.append(gm.pad(num, "thru_hole", shape, px, py, 1.6, 1.6,
+                        '"*.Cu" "*.Mask"', pinnet.get(num), drill=1.0))
+    b.append(gm.npth(-5.6, 0, 3.2))
+    b.append(gm.npth(5.6, 0, 3.2))
+    return s + "\n".join(b) + "\n  )\n"
+
+
+_SOCKET_CRTYD_RE = re.compile(
+    r'\(fp_rect \(start ([-\d.]+) ([-\d.]+)\) \(end ([-\d.]+) ([-\d.]+)\) '
+    r'\(stroke \(width [\d.]+\) \(type solid\)\) \(fill none\) \(layer "B.CrtYd"\)')
+
+
+def _socket_back_courtyard():
+    """The Gateron hot-swap socket's real back-side courtyard bounds
+    (xlo, ylo, xhi, yhi), local to the footprint origin -- read out of
+    gm.fp_gateron()'s own emitted B.CrtYd rectangle rather than hand-copied.
+    generate_macropad_mini.py's socket_obstacles() docstring records what
+    transcribing these by hand cost there once (the housing left out, 13
+    pads ending up underneath it); same reasoning applies here.
+
+    Probing costs nothing but a UUID-counter bump, restored so the real
+    placement below gets the same UUIDs it would without this call.
+    """
+    ctr = gm._ctr[0]
+    try:
+        text = gm.fp_gateron("REF**", 0, 0, None, None, None)
+    finally:
+        gm._ctr[0] = ctr
+    m = _SOCKET_CRTYD_RE.search(text)
+    assert m, "fp_gateron emitted no B.CrtYd rectangle -- socket courtyard unmodelled"
+    return tuple(float(g) for g in m.groups())
+
+
+# ref -> (x, y, side, rot). What placed() returns; also what the overlap
+# scan and the "everything inside the outline" check both read.
+PLACED = {}
+# ref -> (r, c) matrix position, for every matrix-position part (switch or
+# its EC11 stand-in, diode, LED). Two parts sharing a position is the one
+# kind of overlap this board's layout accepts on purpose (LED/diode tucked
+# under their own switch; at row0/col2 the EC11 replaces the switch and
+# shares the cell with its own diode and LED).
+POS_OF_REF = {}
+
+
+def _place(ref, side, x, y, halfx, halfy, rot=0):
+    if rot in (90, 270):
+        halfx, halfy = halfy, halfx
+    gm.FPBOX.append((ref, x, y, halfx, halfy))
+    PLACED[ref] = (x, y, side, rot)
+
+
+def _place_box(ref, side, ox, oy, xlo, xhi, ylo, yhi):
+    """Like _place(), but for a footprint whose real courtyard is not
+    centred on its own origin (the Gateron socket's back courtyard is
+    -9.7..+7.9 in local X, not +-9.7) -- (xlo, xhi, ylo, yhi) are LOCAL
+    bounds relative to the footprint origin (ox, oy). PLACED still reports
+    the origin (the key centre), matching every other ref; only the
+    courtyard box used for overlap-scanning is off-centre."""
+    gm.FPBOX.append((ref, ox + (xlo + xhi) / 2, oy + (ylo + yhi) / 2,
+                     (xhi - xlo) / 2, (yhi - ylo) / 2))
+    PLACED[ref] = (ox, oy, side, 0)
+
+
+def _expected_overlap_tb(r1, r2):
+    p1, p2 = POS_OF_REF.get(r1), POS_OF_REF.get(r2)
+    return p1 is not None and p1 == p2
+
+
+def build_pcb():
+    """Places every footprint and returns the .kicad_pcb text. Also
+    populates the module-level PLACED/POS_OF_REF registries (read by
+    placed()/check_overlaps()) and BOARD_W/BOARD_H as a side effect, so
+    tests can call placed() or check_overlaps() directly without a separate
+    build step."""
+    global BOARD_W, BOARD_H
+    gm.FPBOX.clear()
+    PLACED.clear()
+    POS_OF_REF.clear()
+    socket_crtyd = _socket_back_courtyard()
+
+    nets = build_nets()
+    # net name -> sequential id. This board's net names (ROW0, LEDD3, ...)
+    # are nothing like gm's own hardcoded NETS/NETI (that dict is the
+    # RP2040 wireless board's own net list), so gm.net() -- which every
+    # gm.fp_*()/gm.pad() call below threads netnames through -- is
+    # repointed at OUR dict for the duration of this build. Same technique
+    # generate_macropad_mini.py uses for gm._expected_overlap.
+    net_names = list(nets.keys())
+    gm.NETI = {n: i + 1 for i, n in enumerate(net_names)}
+    gm._expected_overlap = _expected_overlap_tb
+
+    pad_of = {}
+    for net, members in nets.items():
+        for ref, pad in members:
+            pad_of.setdefault(ref, {})[pad] = net
+
+    def real_pad(fp_key, logical):
+        table = PAD_MAP.get(fp_key)
+        return table[logical] if table else logical
+
+    def net_on(ref, pad):
+        return pad_of.get(ref, {}).get(pad)
+
+    fps = []
+
+    # ---- 1. key field: switches, diodes, LEDs ----
+    # Diode offset (-8.5, +1.0, rot=270) and courtyard tracking are the
+    # exact numbers gm.build_pcb() itself uses for its own 4x4 matrix
+    # (same KEY_PITCH=19.05, same footprints) -- proven safe against both
+    # the neighbouring keys (>1.5mm clear at every pitch) and the owning
+    # switch's real pads (0.29mm clear, per that module's own comment).
+    for r in range(ROWS):
+        for c in range(COLS):
+            kx, ky = key_xy(r, c)
+            d = f"D{r}{c}"
+            dx, dy = kx - 8.5, ky + 1.0
+            fps.append(gm.fp_diode(d, dx, dy, 270, net_on(d, "K"), net_on(d, "A"),
+                                   gm.U("sym", d)))
+            _place(d, "B", dx, dy, 2.5, 1.15, rot=270)
+            POS_OF_REF[d] = (r, c)
+
+            if (r, c) == (0, 2):
+                enc = "ENC1"
+                pinnet = {i: net_on(enc, str(i)) for i in range(1, 6)}
+                fps.append(_fp_ec11_vertical(enc, kx, ky, gm.U("sym", enc), pinnet))
+                _place(enc, "F", kx, ky, 7.7, 6.5)
+                POS_OF_REF[enc] = (r, c)
+            else:
+                sw = f"SW{r}{c}"
+                fps.append(gm.fp_gateron(sw, kx, ky, net_on(sw, "1"), net_on(sw, "2"),
+                                         gm.U("sym", sw)))
+                sw_xlo, sw_ylo, sw_xhi, sw_yhi = socket_crtyd
+                _place_box(sw, "B", kx, ky, sw_xlo, sw_xhi, sw_ylo, sw_yhi)
+                POS_OF_REF[sw] = (r, c)
+
+            rgb = f"RGB{r * COLS + c + 1}"
+            pinnet = {int(real_pad("SK6812MINI_E", k)): net_on(rgb, k)
+                     for k in ("VDD", "DOUT", "GND", "DIN")}
+            fps.append(_fp_sk6812mini_tb(rgb, kx, ky, gm.U("sym", rgb), pinnet))
+            _place(rgb, "B", kx, ky, 3.65, 1.87)
+            POS_OF_REF[rgb] = (r, c)
+
+    # ---- 2. XIAO headers, below the key field ----
+    field_x0, field_y0 = key_xy(0, 0)
+    field_x1, _ = key_xy(0, COLS - 1)
+    _, field_y1 = key_xy(ROWS - 1, 0)
+    field_cx = (field_x0 + field_x1) / 2
+    matrix_max_y = field_y1 + 7.5   # switch back-courtyard reach
+    xiao_y = matrix_max_y + 5 + 10.5
+    fps.append(_fp_xiao_headers("U1", field_cx, xiao_y, gm.U("sym", "U1"),
+                                {i: net_on("U1", str(i)) for i in range(1, 15)}))
+    _place("U1", "F", field_cx, xiao_y, 10.2, 10.5)
+
+    # ---- 3. level shifter, bulk cap, JST -- bottom edge ----
+    bottom_y = xiao_y + 10.5 + 5 + 3.28
+    fps.append(gm.fp_jst_sh("J1", field_x0, bottom_y, 0, gm.U("sym", "J1"),
+                            net_on("J1", "1"), net_on("J1", "2")))
+    _place("J1", "B", field_x0, bottom_y, 2.9, 3.28)
+
+    lvl_pinnet = {int(real_pad("SOT-23-5", k)): net_on("U2", k)
+                 for k in ("OE#", "A", "GND", "Y", "VCC")}
+    fps.append(gm.fp_sot23_5("U2", "SN74AHCT1G125DBVR", field_cx, bottom_y, 0,
+                             gm.U("sym", "U2"), lvl_pinnet))
+    _place("U2", "F", field_cx, bottom_y, 1.7, 2.0)
+
+    fps.append(gm.fp_0603("C1", "100u", field_x1, bottom_y, 0, gm.U("sym", "C1"),
+                          "VSYS", "GND"))
+    _place("C1", "F", field_x1, bottom_y, 1.5, 0.9)
+
+    # ---- 4. board outline + BOARD_W/BOARD_H ----
+    # Derived from the extents of everything placed so far (mounting holes
+    # excluded -- they are positioned FROM the board size, so including
+    # them would be circular), plus a 5mm margin. Origin is (0,0); every
+    # part above already has >5mm clearance to the origin corner on its
+    # own (the nearest thing, a switch back-courtyard, sits at x=15.3,
+    # y=17.5), so only the far/bottom margin needs to be added explicitly.
+    max_x = max(x + hx for (_ref, x, y, hx, hy) in gm.FPBOX)
+    max_y = max(y + hy for (_ref, x, y, hx, hy) in gm.FPBOX)
+    MARGIN = 5.0
+    BOARD_W = round(max_x + MARGIN, 2)
+    BOARD_H = round(max_y + MARGIN, 2)
+
+    # ---- 5. mounting holes, corners ----
+    for hi, (hx, hy) in enumerate([(MARGIN, MARGIN), (BOARD_W - MARGIN, MARGIN),
+                                   (MARGIN, BOARD_H - MARGIN),
+                                   (BOARD_W - MARGIN, BOARD_H - MARGIN)], start=1):
+        fps.append(gm.fp_hole(f"H{hi}", hx, hy))
+        _place(f"H{hi}", "F", hx, hy, 2.4, 2.4)
+
+    nets_decl = "\n".join(f'  (net {i} "{n}")' for i, n in enumerate([""] + net_names))
+    edge = (f'  (gr_rect (start 0 0) (end {BOARD_W:g} {BOARD_H:g}) '
+           f'(stroke (width 0.1) (type solid)) (fill none) (layer "Edge.Cuts") '
+           f'(uuid "{gm.NU("edge")}"))')
+    title = (f'  (gr_text "SMK TEST BOARD -- 3x3, XIAO ESP32-C6 + EC11  rev A" '
+            f'(at 5 4) (layer "F.SilkS") (uuid "{gm.NU("gt")}")\n'
+            f'    (effects (font (size 2 2) (thickness 0.3)) (justify left)))')
+
+    return f'''(kicad_pcb (version 20240108) (generator "pcbnew") (generator_version "8.0")
+  (general (thickness 1.6) (legacy_teardrops no))
+  (paper "A4")
+  (title_block
+    (title "SMK Test Board -- 3x3 macropad, XIAO ESP32-C6 + EC11 + 9x SK6812MINI-E")
+    (rev "A")
+    (comment 1 "Bring-up board for SMK's matrix/RMT-LED/BatteryMonitor code paths on ESP32-C6")
+  )
+  (layers
+    (0 "F.Cu" signal)
+    (31 "B.Cu" signal)
+    (32 "B.Adhes" user "B.Adhesive")
+    (33 "F.Adhes" user "F.Adhesive")
+    (34 "B.Paste" user)
+    (35 "F.Paste" user)
+    (36 "B.SilkS" user "B.Silkscreen")
+    (37 "F.SilkS" user "F.Silkscreen")
+    (38 "B.Mask" user)
+    (39 "F.Mask" user)
+    (40 "Dwgs.User" user "User.Drawings")
+    (41 "Cmts.User" user "User.Comments")
+    (42 "Eco1.User" user "User.Eco1")
+    (43 "Eco2.User" user "User.Eco2")
+    (44 "Edge.Cuts" user)
+    (45 "Margin" user)
+    (46 "B.CrtYd" user "B.Courtyard")
+    (47 "F.CrtYd" user "F.Courtyard")
+    (48 "B.Fab" user)
+    (49 "F.Fab" user)
+  )
+  (setup
+    (stackup
+      (layer "F.Cu" (type "copper") (thickness 0.035))
+      (layer "dielectric 1" (type "core") (thickness 1.51) (material "FR4")
+        (epsilon_r 4.5) (loss_tangent 0.02))
+      (layer "B.Cu" (type "copper") (thickness 0.035))
+      (layer "F.SilkS" (type "Top Silk Screen"))
+      (layer "F.Paste" (type "Top Solder Paste"))
+      (layer "F.Mask" (type "Top Solder Mask") (thickness 0.01))
+      (layer "B.Mask" (type "Bottom Solder Mask") (thickness 0.01))
+      (layer "B.Paste" (type "Bottom Solder Paste"))
+      (layer "B.SilkS" (type "Bottom Silk Screen"))
+      (copper_finish "None")
+      (dielectric_constraints no)
+    )
+    (pad_to_mask_clearance 0)
+    (allow_soldermask_bridges_in_footprints no)
+    (pcbplotparams
+      (layerselection 0x00010fc_ffffffff)
+      (plot_on_all_layers_selection 0x0000000_00000000)
+      (disableapertmacros no)
+      (usegerberextensions no)
+      (usegerberattributes yes)
+      (usegerberadvancedattributes yes)
+      (creategerberjobfile yes)
+      (dashed_line_dash_ratio 12.000000)
+      (dashed_line_gap_ratio 3.000000)
+      (svgprecision 4)
+      (plotframeref no)
+      (viasonmask no)
+      (mode 1)
+      (useauxorigin no)
+      (hpglpennumber 1)
+      (hpglpenspeed 20)
+      (hpglpendiameter 15.000000)
+      (pdf_front_fp_property_popups yes)
+      (pdf_back_fp_property_popups yes)
+      (dxfpolygonmode yes)
+      (dxfimperialunits yes)
+      (dxfusepcbnewfont yes)
+      (psnegative no)
+      (psa4output no)
+      (plotreference yes)
+      (plotvalue yes)
+      (plotfptext yes)
+      (plotinvisibletext no)
+      (sketchpadsonfab no)
+      (subtractmaskfromsilk no)
+      (outputformat 1)
+      (mirror no)
+      (drillshape 1)
+      (scaleselection 1)
+      (outputdirectory "")
+    )
+  )
+{nets_decl}
+{"".join(fps)}
+{edge}
+{title}
+)
+'''
+
+
+def placed():
+    """ref -> (x, y, side, rot) for every footprint on the board."""
+    build_pcb()
+    return dict(PLACED)
+
+
+def check_overlaps():
+    """(unexpected, expected) courtyard bounding-box collisions -- a thin
+    wrapper around gm's own scanning loop (FPBOX pairwise comparison), with
+    this board's own _expected_overlap_tb (matrix-position matching, not
+    gm's Dn/SWn ref-name pattern -- this board's LEDs don't fit that
+    pattern) installed first."""
+    build_pcb()
+    gm._expected_overlap = _expected_overlap_tb
+    return gm.check_overlaps()
+
+
+BOARD_W = None
+BOARD_H = None
+
+
 def main():
     os.makedirs(PRJDIR, exist_ok=True)
     sch_path = os.path.join(PRJDIR, f"{PROJ}.kicad_sch")
     with open(sch_path, "w") as f:
         f.write(build_sch())
-    print(f"wrote {sch_path}")
+    print(f"wrote {sch_path}  ({len(build_sch()) // 1024} kB)")
+
+    pcb = build_pcb()
+    pcb_path = os.path.join(PRJDIR, f"{PROJ}.kicad_pcb")
+    with open(pcb_path, "w") as f:
+        f.write(pcb)
+    print(f"wrote {pcb_path}  ({len(pcb) // 1024} kB)")
+    print(gm.check_parens(pcb, f"{PROJ}.kicad_pcb"))
+
+    unexpected, expected = check_overlaps()
+    print("overlap scan: {} expected (each key's diode/LED under its own "
+          "switch, or the EC11 sharing row0/col2 with its own diode/LED), "
+          "{} unexpected".format(len(expected), len(unexpected)))
+    if unexpected:
+        print("UNEXPECTED OVERLAPS -- investigate:")
+        for r1, r2, amt in unexpected:
+            print(f"  {r1} <-> {r2}: overlap ~{amt:.2f}mm (courtyard bounding boxes)")
 
 
 if __name__ == "__main__":

@@ -90,3 +90,28 @@ def test_no_net_has_fewer_than_two_members():
     nets = tb.build_nets()
     floating = {net: members for net, members in nets.items() if len(members) < 2}
     assert not floating, f"floating (single-member) nets: {floating}"
+
+
+def test_leds_sit_under_their_keys():
+    p = tb.placed()
+    for r in range(tb.ROWS):
+        for c in range(tb.COLS):
+            kx, ky = tb.key_xy(r, c)
+            lx, ly, side, _ = p[f"RGB{r * tb.COLS + c + 1}"]
+            assert side == "B", "SK6812MINI-E is reverse-mount: back side"
+            assert abs(lx - kx) < 1.0 and abs(ly - ky) < 1.0, \
+                f"RGB under key {r},{c} is {lx-kx:.2f},{ly-ky:.2f} off centre"
+
+
+def test_everything_is_inside_the_board_outline():
+    p = tb.placed()
+    w, h = tb.BOARD_W, tb.BOARD_H
+    for ref, (x, y, _, _) in p.items():
+        assert 0 < x < w and 0 < y < h, f"{ref} at {x},{y} outside {w}x{h}"
+
+
+def test_no_unexpected_courtyard_overlaps():
+    """Diodes and LEDs under their own switch are expected; anything else
+    overlapping means two parts cannot both be assembled."""
+    unexpected, _expected = tb.check_overlaps()
+    assert unexpected == [], f"unexpected overlaps: {unexpected}"
