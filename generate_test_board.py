@@ -920,7 +920,16 @@ def build_pcb():
                 POS_OF_REF[sw] = (r, c)
                 neighbor_obstacles = sw_obstacles
 
-            i = r * COLS + c + 1
+            # Chain position must match ~/esp/SMK's
+            # Sources/SMKCore/LEDChainMapping.swift `ledChainIndex()` --
+            # serpentine/boustrophedon, not raster: even rows run
+            # col0->COLS-1, odd rows run COLS-1->0. That function is what
+            # RGBLighting.swift actually indexes into at runtime, so the
+            # physical RGB{i} landing at (r, c) has to be its 1-indexed
+            # chain position, not r*COLS+c+1 (raster). On a 3x3 those two
+            # formulas only disagree on the odd row (row 1), which is why
+            # this shipped wrong and passed review for several rounds.
+            i = (r * COLS + c if r % 2 == 0 else r * COLS + (COLS - 1 - c)) + 1
             rgb = f"RGB{i}"
             lx, ly = kx, ky + LED_OFFSET_Y
             pinnet = {int(real_pad("SK6812MINI_E", k)): net_on(rgb, k)

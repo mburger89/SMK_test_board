@@ -58,8 +58,15 @@ damage the XIAO the moment it's powered, and there is no way to undo that.
 
   Result: ______________________________________________
 
-- [ ] **1c. 3V3–GND continuity.** Same method, 3V3 to GND. Expect **no
-  continuity**.
+- [ ] **1c. 3V3–GND continuity.** Same method as 1b. Probe the XIAO
+  footprint's **3V3 pad (`U1` pin 12)** against a GND pad (`U1` pin 13, or
+  any other GND point, e.g. `J1` pin 2). Note this rail isn't carried
+  anywhere else on this board — `build_nets()` deliberately leaves U1 pin
+  12 unwired, since nothing here consumes regulated 3.3V (the LEDs run
+  from VSYS, and the level shifter is single-rail) — so this check is
+  really validating there's no solder bridge on the XIAO header footprint
+  itself between that pin and its GND neighbor, not a populated PCB net.
+  Expect **no continuity**.
 
   Result: ______________________________________________
 
@@ -214,16 +221,27 @@ relevant here.
 
 `keymap.json` has no `tg:` binding at all (design spec §9 check 2 wants
 both `mo:` and `tg:` verified). Add one as part of the same upload, on an
-ordinary key well away from the encoder:
+ordinary key well away from the encoder — and on **both** layers, the same
+way `mo:1`/`trans` are paired at row 0 / col 2: a `tg:` binding with no
+matching `trans` underneath it on the layer it switches to has no way
+back. `LayerEngine.getAction` only falls through to a lower layer when a
+cell is literally `trans` — once layer 1 is active, pressing that same key
+again resolves to whatever layer 1's own cell says, not layer 0's `tg:1`,
+so if layer 1's cell is still an ordinary keycode, the second press just
+types that keycode and the board is stuck on layer 1 with no way back
+except a fresh upload.
 
 - [ ] **5a. Load and edit the reference keymap.** In the configurator, File
   → Open `~/esp/SMK_test_board/keymap.json`. Its matrix (`rows: [1,2,21]`,
   `cols: [22,23,16]`, `colsAreDriven: 1`) matches `KeyboardDesign
   .smkTestBoard` exactly, so the app should auto-select that design — the
   key grid should render as a labeled 3×3, not a generic/unlabeled
-  fallback. Remap the **row 2 / col 2** key (currently `key:8` on layer 0)
-  to `tg:1`. Leave everything else as-is, including the row 0 / col 2
-  `mo:1` binding on the encoder.
+  fallback. Remap **both** of these:
+  - **row 2 / col 2, layer 0** (currently `key:8`) → `tg:1`.
+  - **row 2 / col 2, layer 1** (currently `key:f8`) → `trans`.
+
+  Leave everything else as-is, including the row 0 / col 2 `mo:1`/`trans`
+  pairing on the encoder.
 
   Result: ______________________________________________
 
@@ -244,7 +262,11 @@ ordinary key well away from the encoder:
 - [ ] **5d. `tg:` latching.** Press and release the row 2 / col 2 key once
   (the `tg:1` you just added). Confirm the board **stays** on layer 1 —
   the other keys now emit `F1`–`F8` without anything held down. Press the
-  same key again and confirm it toggles back to layer 0.
+  same key again — because layer 1's row 2 / col 2 is now `trans` (Step
+  5a), this falls through to layer 0's `tg:1` and toggles back — confirm
+  it does. If it instead types `F8` and layer 1 stays active, Step 5a's
+  layer-1 edit didn't take; re-check both cells before treating this as a
+  device fault.
 
   Result: ______________________________________________
 

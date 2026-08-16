@@ -95,15 +95,47 @@ def test_no_net_has_fewer_than_two_members():
 def test_leds_sit_at_the_north_led_window():
     """-6.025mm: the north-side window centre, derived in
     generate_kbd_rp2040.py:2050 as -(5.75+6.30)/2. South was tried on the
-    shipped board and abandoned -- that is the side the leg holes are on."""
+    shipped board and abandoned -- that is the side the leg holes are on.
+
+    Looks each RGB ref up by its recorded (r, c) in POS_OF_REF rather than
+    computing a ref name from (r, c) inline, so this test doesn't itself
+    depend on which chain-numbering scheme is in use (raster vs
+    serpentine) -- that's covered separately, below."""
     p = tb.placed()
+    for ref, (r, c) in tb.POS_OF_REF.items():
+        if not ref.startswith("RGB"):
+            continue
+        kx, ky = tb.key_xy(r, c)
+        lx, ly, side, _ = p[ref]
+        assert side == "B", "SK6812MINI-E is reverse-mount: back side"
+        assert abs(lx - kx) < 0.1, f"{ref} under key {r},{c} off-axis by {lx-kx:.2f}"
+        assert abs(ly - (ky - 6.025)) < 0.1, f"{ref} y offset {ly-ky:.2f}, want -6.025"
+
+
+def test_led_chain_order_matches_firmwares_serpentine_mapping():
+    """The physical RGB{i} at key (r, c) must be that key's 1-indexed
+    chain position per ~/esp/SMK's Sources/SMKCore/LEDChainMapping.swift
+    `ledChainIndex()` -- the function RGBLighting.swift actually indexes
+    into at runtime (Sources/smk/RGBLighting.swift). That function is
+    serpentine/boustrophedon: even rows run col0->COLS-1, odd rows run
+    COLS-1->0, transcribed here since it's Swift and this suite is
+    Python. A raster formula (r*COLS+c+1) instead of this one shipped
+    once and passed review for several rounds, because raster and
+    serpentine only disagree on odd rows -- ROWS=3 has exactly one (row
+    1), so checking a couple of positions would have missed it too, this
+    checks all nine."""
+    tb.placed()  # populates POS_OF_REF as a side effect
     for r in range(tb.ROWS):
         for c in range(tb.COLS):
-            kx, ky = tb.key_xy(r, c)
-            lx, ly, side, _ = p[f"RGB{r * tb.COLS + c + 1}"]
-            assert side == "B", "SK6812MINI-E is reverse-mount: back side"
-            assert abs(lx - kx) < 0.1, f"RGB under key {r},{c} off-axis by {lx-kx:.2f}"
-            assert abs(ly - (ky - 6.025)) < 0.1, f"RGB y offset {ly-ky:.2f}, want -6.025"
+            if r % 2 == 0:
+                chain_index = r * tb.COLS + c
+            else:
+                chain_index = r * tb.COLS + (tb.COLS - 1 - c)
+            rgb = f"RGB{chain_index + 1}"
+            assert tb.POS_OF_REF[rgb] == (r, c), (
+                f"{rgb} is ledChainIndex's LED for key ({r},{c}), but the "
+                f"generator placed it at {tb.POS_OF_REF[rgb]}"
+            )
 
 
 def test_everything_is_inside_the_board_outline():
