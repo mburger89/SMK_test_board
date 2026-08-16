@@ -21,6 +21,7 @@ WHAT IS UNVERIFIED
   is 3.7V, so the LEDs may misbehave on a low cell. Inherited from the part
   choice, not a defect here.
 """
+import json
 import math
 import os
 import re
@@ -1558,12 +1559,151 @@ BOARD_W = None
 BOARD_H = None
 
 
+# ============================================ PROJECT + LIBRARY TABLE ======
+# Spec Sec.5 promises smk_test_board.kicad_{pro,sch,pcb}; only the last two
+# were ever written, and no fp-lib-table was committed either. That second
+# omission is the real cause of DRC's 46 `lib_footprint_issues` warnings --
+# docs/fabrication.md used to blame "running kicad-cli outside the full KiCad
+# project environment", which is plausible and wrong: kicad-cli reads the
+# project directory perfectly well, there was simply no library registered in
+# it for either `smk_test_board:` or `kbd:` to resolve against.
+#
+# `kbd:` is the harder half. gm.fp_gateron()/fp_diode()/fp_0603()/fp_jst_sh()/
+# fp_sot23_5()/fp_hole() all hardcode the `kbd:` prefix, and the only
+# kbd.pretty on this machine lives inside a SIBLING repo
+# (~/esp/SMK_macro_pad/smk_macropad/kbd.pretty) -- an absolute path outside
+# this project, which is not something to write into a committed lib table.
+# So the six gm footprints this board actually uses are re-emitted into the
+# project's own kbd.pretty from gm's own generators (the same export_libs()
+# technique gm uses for its own project), and the lib table points at that.
+# The board is then self-contained: both libraries resolve from ${KIPRJMOD}.
+GM_LIB_FOOTPRINTS = [
+    ("SW_Gateron_KS33_HS", lambda: gm.fp_gateron("REF**", 0, 0, None, None, None)),
+    ("D_SOD-123_Back", lambda: gm.fp_diode("REF**", 0, 0, 0, None, None, None)),
+    ("RC_0603", lambda: gm.fp_0603("REF**", "0603", 0, 0, 0, None, None, None)),
+    ("JST_SH_SM02B_2pin_Back", lambda: gm.fp_jst_sh("REF**", 0, 0, 0, None, None, None)),
+    ("SOT-23-5", lambda: gm.fp_sot23_5("REF**", "SOT-23-5", 0, 0, 0, None, {})),
+    ("MountingHole_M2", lambda: gm.fp_hole("REF**", 0, 0)),
+]
+
+
+def write_project_libs():
+    """Write the project's kbd.pretty, fp-lib-table and .kicad_pro."""
+    pretty = os.path.join(PRJDIR, "kbd.pretty")
+    os.makedirs(pretty, exist_ok=True)
+    for name, build in GM_LIB_FOOTPRINTS:
+        txt = build().strip()
+        assert txt.startswith("(footprint"), name
+        txt = txt.replace(f'(footprint "kbd:{name}"',
+                          f'(footprint "{name}" (version 20240108) '
+                          f'(generator "pcbnew")', 1)
+        with open(os.path.join(pretty, f"{name}.kicad_mod"), "w") as f:
+            f.write(txt + "\n")
+
+    with open(os.path.join(PRJDIR, "fp-lib-table"), "w") as f:
+        f.write(
+            '(fp_lib_table\n'
+            '  (version 7)\n'
+            '  (lib (name "smk_test_board")(type "KiCad")'
+            '(uri "${KIPRJMOD}/../smk_test_board.pretty")(options "")'
+            '(descr "test board footprints drawn by this project"))\n'
+            '  (lib (name "kbd")(type "KiCad")(uri "${KIPRJMOD}/kbd.pretty")'
+            '(options "")(descr "footprints re-emitted from '
+            'generate_macropad.py\'s own generators"))\n'
+            ')\n')
+
+    pro_path = os.path.join(PRJDIR, f"{PROJ}.kicad_pro")
+    with open(pro_path, "w") as f:
+        f.write(build_pro())
+    return pro_path
+
+
+def build_pro():
+    """A minimal, valid KiCad 8 project file. Modelled on gm.build_pro() but
+    written locally: gm's bakes its own PROJ name, root-sheet UUID and the
+    4-layer/1oz JLCPCB rule set for the RP2040 wireless board into the JSON,
+    none of which describe this 2-layer board."""
+    return json.dumps({
+        "board": {
+            "3dviewports": [], "design_settings": {
+                "defaults": {"text_height": 1.0, "text_width": 1.0,
+                             "text_thickness": 0.15, "line_thickness": 0.15},
+                # JLCPCB 2-layer/1oz floors; nothing on this board is close
+                # to any of them (it ships unrouted -- no tracks or vias at
+                # all), but leaving KiCad's looser defaults in place would
+                # let a future routing pass pass DRC and fail the fab.
+                "rules": {
+                    "min_clearance": 0.127,
+                    # 0.2, not KiCad's 0.5 default and not the 0.3 a fab
+                    # usually "recommends". The tightest copper-to-edge on
+                    # this board is 0.2467mm, and all 36 instances of it are
+                    # an SK6812MINI-E pad against ITS OWN light window --
+                    # geometry that comes with the stock KiCad
+                    # LED_SK6812MINI-E_3.2x2.8mm_P1.5mm_ReverseMount
+                    # footprint, used unmodified, and that the sibling board
+                    # ~/esp/SMK_Keyboard/smk_kbd_rp2040 has already
+                    # fabricated 58 times. Note KiCad measures to the OUTER
+                    # EDGE of the 0.12mm-wide Edge.Cuts graphic; the gap to
+                    # the nominal cut path (what the router actually
+                    # follows) is 0.3067mm. Left at 0.5 or 0.3 this rule
+                    # reports 36 errors that are inherent to a proven part
+                    # and cannot be fixed without redrawing the footprint --
+                    # which would break the light window it exists for.
+                    # docs/fabrication.md's ordering checklist carries the
+                    # matching instruction to confirm the fab's
+                    # copper-to-slot capability covers 0.25mm.
+                    "min_copper_edge_clearance": 0.2,
+                    "min_hole_clearance": 0.20,
+                    "min_hole_to_hole": 0.25,
+                    "min_track_width": 0.127,
+                    "min_through_hole_diameter": 0.3,
+                    "min_via_diameter": 0.45,
+                    "min_via_annular_width": 0.15,
+                    "min_text_height": 1.0,
+                    "min_text_thickness": 0.15,
+                },
+            },
+            "layer_presets": [], "viewports": [],
+        },
+        "boards": [], "cvpcb": {"equivalence_files": []},
+        "libraries": {"pinned_footprint_libs": [], "pinned_symbol_libs": []},
+        "meta": {"filename": f"{PROJ}.kicad_pro", "version": 1},
+        "net_settings": {
+            "classes": [{
+                "name": "Default", "priority": 2147483647,
+                "clearance": 0.2, "track_width": 0.25,
+                "via_diameter": 0.6, "via_drill": 0.3,
+                "microvia_diameter": 0.3, "microvia_drill": 0.1,
+                "diff_pair_width": 0.2, "diff_pair_gap": 0.25,
+                "diff_pair_via_gap": 0.25,
+                "bus_width": 12, "line_style": 0, "wire_width": 6,
+                "pcb_color": "rgba(0, 0, 0, 0.000)",
+                "schematic_color": "rgba(0, 0, 0, 0.000)",
+            }],
+            "meta": {"version": 3},
+        },
+        "pcbnew": {"last_paths": {}, "page_layout_descr_file": ""},
+        "schematic": {"annotate_start_num": 0, "drawing": {},
+                      "legacy_lib_dir": "", "legacy_lib_list": [],
+                      "meta": {"version": 1}},
+        "sheets": [[gm.U("smk-test-board-root-sheet"), "Root"]],
+        "text_variables": {},
+    }, indent=2) + "\n"
+
+
 def main():
     os.makedirs(PRJDIR, exist_ok=True)
     sch_path = os.path.join(PRJDIR, f"{PROJ}.kicad_sch")
+    # build_sch() ONCE. It was called twice here (the second only to compute
+    # a size for the log line), and since gm.NU() bumps a module-global
+    # counter, that second call shifted every UUID the PCB build then
+    # emitted -- so every regeneration produced a wholly different-looking
+    # .kicad_pcb and "did the board actually change?" was unanswerable by
+    # diff. Regeneration is now byte-identical for an unchanged generator.
+    sch = build_sch()
     with open(sch_path, "w") as f:
-        f.write(build_sch())
-    print(f"wrote {sch_path}  ({len(build_sch()) // 1024} kB)")
+        f.write(sch)
+    print(f"wrote {sch_path}  ({len(sch) // 1024} kB)")
 
     pcb = build_pcb()
     pcb_path = os.path.join(PRJDIR, f"{PROJ}.kicad_pcb")
@@ -1571,6 +1711,9 @@ def main():
         f.write(pcb)
     print(f"wrote {pcb_path}  ({len(pcb) // 1024} kB)")
     print(gm.check_parens(pcb, f"{PROJ}.kicad_pcb"))
+
+    print(f"wrote {write_project_libs()}, fp-lib-table, kbd.pretty "
+          f"({len(GM_LIB_FOOTPRINTS)} footprints)")
 
     unexpected, expected = check_overlaps()
     print("overlap scan: {} expected (each key's diode/LED under its own "
