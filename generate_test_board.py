@@ -136,6 +136,15 @@ def build_nets():
             add(f"LEDD{i + 1}", f"RGB{i}", "DOUT")
         add("VSYS", f"RGB{i}", "VDD")             # NOT +3V3: VDD min is 3.7V
         add("GND", f"RGB{i}", "GND")
+        # Local 100nF decoupling per LED (C1..C9, one per RGBi), matching
+        # the SK6812MINI-E datasheet's own recommended application circuit
+        # -- and the sibling keyboard project's C100-C158, added there for
+        # the same reason (an earlier revision of that board had only one
+        # bulk cap at the chain's start, LEDs away from the far end).
+        # Controller review round 1 on Task 6: this board's build_nets()
+        # originally wired none of these at all; fixed here.
+        add("VSYS", f"C{i}", "1")
+        add("GND", f"C{i}", "2")
 
     add("ENC_A", "U1", "8")
     add("ENC_A", "ENC1", "1")
@@ -145,6 +154,15 @@ def build_nets():
     add("COL2", "ENC1", "4")                      # push switch: COL2 side
     add("SW02_N", "ENC1", "5")                    # push switch: diode side
     add("SW02_N", "D02", "A")                     # D02 anode meets the switch
+
+    # Encoder debounce: 100nF A-to-GND and B-to-GND, per the design spec's
+    # §2 ("each with a 100nF capacitor to ground for contact debounce").
+    # Also missing from the original build_nets(); fixed alongside the LED
+    # decoupling caps above.
+    add("ENC_A", "C10", "1")
+    add("GND", "C10", "2")
+    add("ENC_B", "C11", "1")
+    add("GND", "C11", "2")
 
     add("VSYS", "J1", "1")
     add("GND", "J1", "2")
@@ -710,10 +728,25 @@ def build_pcb():
 
             if (r, c) == (0, 2):
                 enc = "ENC1"
-                pinnet = {i: net_on(enc, str(i)) for i in range(1, 6)}
-                fps.append(_fp_ec11_vertical(enc, kx, ky, gm.U("sym", enc), pinnet))
+                enc_pinnet = {n: net_on(enc, str(n)) for n in range(1, 6)}
+                fps.append(_fp_ec11_vertical(enc, kx, ky, gm.U("sym", enc), enc_pinnet))
                 _place(enc, "F", kx, ky, 7.7, 6.5)
                 POS_OF_REF[enc] = (r, c)
+
+                # Encoder debounce (C10/C11, build_nets() addition from
+                # controller review round 1): 100nF A-to-GND, B-to-GND, per
+                # the design spec's Sec.2. Positions found the same way as
+                # the per-LED caps -- grid search against EC11's own real
+                # pin/leg obstacles, mirrored either side of the encoder,
+                # front side (same side as ENC1 and the XIAO trace they
+                # decouple, no extra via).
+                for debounce, (ddx, ddy) in [("C10", (-5.8, -4.7)), ("C11", (5.8, -4.7))]:
+                    dcx, dcy = kx + ddx, ky + ddy
+                    fps.append(gm.fp_0603(debounce, "100n", dcx, dcy, 0,
+                                          gm.U("sym", debounce),
+                                          net_on(debounce, "1"), net_on(debounce, "2")))
+                    _place(debounce, "F", dcx, dcy, 1.5, 0.9)
+                    POS_OF_REF[debounce] = (r, c)
             else:
                 sw = f"SW{r}{c}"
                 fps.append(gm.fp_gateron(sw, kx, ky, net_on(sw, "1"), net_on(sw, "2"),
@@ -722,12 +755,36 @@ def build_pcb():
                 _place_box(sw, "B", kx, ky, sw_xlo, sw_xhi, sw_ylo, sw_yhi)
                 POS_OF_REF[sw] = (r, c)
 
-            rgb = f"RGB{r * COLS + c + 1}"
+            # 5.9mm south of key centre (+Y, per key_xy's own convention),
+            # not key centre: centre lands on the switch's own boss NPTH
+            # and the LED illuminates nothing. Controller review round 1
+            # on Task 6 corrected this from the original (kx, ky) --
+            # 5.9mm south is the standard south-facing SMD LED offset for
+            # MX-compatible/low-profile switches; see
+            # generate_kbd_rp2040.py:163 in the sibling keyboard project.
+            LED_OFFSET_Y = 5.9
+            i = r * COLS + c + 1
+            rgb = f"RGB{i}"
+            lx, ly = kx, ky + LED_OFFSET_Y
             pinnet = {int(real_pad("SK6812MINI_E", k)): net_on(rgb, k)
                      for k in ("VDD", "DOUT", "GND", "DIN")}
-            fps.append(_fp_sk6812mini_tb(rgb, kx, ky, gm.U("sym", rgb), pinnet))
-            _place(rgb, "B", kx, ky, 3.65, 1.87)
+            fps.append(_fp_sk6812mini_tb(rgb, lx, ly, gm.U("sym", rgb), pinnet))
+            _place(rgb, "B", lx, ly, 3.65, 1.87)
             POS_OF_REF[rgb] = (r, c)
+
+            # Per-LED 100nF decoupling (C1..C9, build_nets() addition from
+            # controller review round 1). Position found by grid search
+            # against the socket's real obstacles (3 NPTH + 2 SMD pads,
+            # read via _socket_back_courtyard()'s sibling technique --
+            # see the search script referenced in the fix report) and the
+            # LED's own (now-moved) pads: (+4.8, +2.3) from key centre
+            # clears all of them by >=0.98mm.
+            cap = f"C{i}"
+            cx, cy = kx + 4.8, ky + 2.3
+            fps.append(gm.fp_0603(cap, "100n", cx, cy, 0, gm.U("sym", cap),
+                                  net_on(cap, "1"), net_on(cap, "2"), side="B"))
+            _place(cap, "B", cx, cy, 1.5, 0.9)
+            POS_OF_REF[cap] = (r, c)
 
     # ---- 2. XIAO headers, below the key field ----
     field_x0, field_y0 = key_xy(0, 0)
@@ -752,9 +809,14 @@ def build_pcb():
                              gm.U("sym", "U2"), lvl_pinnet))
     _place("U2", "F", field_cx, bottom_y, 1.7, 2.0)
 
-    fps.append(gm.fp_0603("C1", "100u", field_x1, bottom_y, 0, gm.U("sym", "C1"),
+    # Ref C_BULK, not C1 -- C1..C9 are now the per-LED decoupling caps
+    # (build_nets()) and C10/C11 the encoder debounce caps; this bulk cap
+    # has no build_nets() entry of its own (VSYS/GND are passed directly),
+    # so any non-colliding name works, but reusing "C1" here would shadow
+    # a real, netted ref.
+    fps.append(gm.fp_0603("C_BULK", "100u", field_x1, bottom_y, 0, gm.U("sym", "C_BULK"),
                           "VSYS", "GND"))
-    _place("C1", "F", field_x1, bottom_y, 1.5, 0.9)
+    _place("C_BULK", "F", field_x1, bottom_y, 1.5, 0.9)
 
     # ---- 4. board outline + BOARD_W/BOARD_H ----
     # Derived from the extents of everything placed so far (mounting holes

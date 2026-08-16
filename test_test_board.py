@@ -92,15 +92,18 @@ def test_no_net_has_fewer_than_two_members():
     assert not floating, f"floating (single-member) nets: {floating}"
 
 
-def test_leds_sit_under_their_keys():
+def test_leds_sit_at_the_south_facing_led_window():
+    """5.9mm south of key centre: the light-pipe window on MX-compatible
+    south-facing housings. Centre would land on the switch's boss hole and
+    illuminate nothing -- see generate_kbd_rp2040.py:163."""
     p = tb.placed()
     for r in range(tb.ROWS):
         for c in range(tb.COLS):
             kx, ky = tb.key_xy(r, c)
             lx, ly, side, _ = p[f"RGB{r * tb.COLS + c + 1}"]
             assert side == "B", "SK6812MINI-E is reverse-mount: back side"
-            assert abs(lx - kx) < 1.0 and abs(ly - ky) < 1.0, \
-                f"RGB under key {r},{c} is {lx-kx:.2f},{ly-ky:.2f} off centre"
+            assert abs(lx - kx) < 0.1, f"RGB under key {r},{c} off-axis by {lx-kx:.2f}"
+            assert abs(ly - (ky + 5.9)) < 0.1, f"RGB y offset {ly-ky:.2f}, want 5.9"
 
 
 def test_everything_is_inside_the_board_outline():
