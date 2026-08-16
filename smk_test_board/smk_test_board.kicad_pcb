@@ -1631,6 +1631,6 @@
   )
 
   (gr_rect (start 0 0) (end 76 113.16) (stroke (width 0.1) (type solid)) (fill none) (layer "Edge.Cuts") (uuid "0882ddc8-ea72-5c5d-bac6-ca4f636f6278"))
-  (gr_text "SMK TEST BOARD -- 3x3, XIAO ESP32-C6 + EC11  rev A" (at 5 4) (layer "F.SilkS") (uuid "92771c5c-d993-58ae-9cb4-e167e908861b")
-    (effects (font (size 2 2) (thickness 0.3)) (justify left)))
+  (gr_text "SMK TEST BOARD -- 3x3, XIAO ESP32-C6 + EC11  rev A" (at 7 10.5) (layer "F.SilkS") (uuid "92771c5c-d993-58ae-9cb4-e167e908861b")
+    (effects (font (size 1.2 1.2) (thickness 0.18)) (justify left)))
 )

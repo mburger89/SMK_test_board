@@ -1017,9 +1017,18 @@ def build_pcb():
     edge = (f'  (gr_rect (start 0 0) (end {BOARD_W:g} {BOARD_H:g}) '
            f'(stroke (width 0.1) (type solid)) (fill none) (layer "Edge.Cuts") '
            f'(uuid "{gm.NU("edge")}"))')
+    # Title text: the original (5,4) placement sat inside H1's silkscreen
+    # circle (centered at (MARGIN, MARGIN)=(5,5), radius 2.3mm, spanning
+    # x=2.7..7.3, y=2.7..7.7) and clipped the top board edge. Nudging it
+    # sideways to clear H1 wasn't enough on its own -- the string is long
+    # enough that its right end then reached H2's circle at
+    # (BOARD_W-MARGIN, MARGIN). Dropping it to y=10.5 instead clears both
+    # corner holes' circles (which end at y=7.7) by the same margin
+    # regardless of board width, at the cost of a couple mm of headroom
+    # before the first row of components (nearest is C1 at y~15.8).
     title = (f'  (gr_text "SMK TEST BOARD -- 3x3, XIAO ESP32-C6 + EC11  rev A" '
-            f'(at 5 4) (layer "F.SilkS") (uuid "{gm.NU("gt")}")\n'
-            f'    (effects (font (size 2 2) (thickness 0.3)) (justify left)))')
+            f'(at 7 10.5) (layer "F.SilkS") (uuid "{gm.NU("gt")}")\n'
+            f'    (effects (font (size 1.2 1.2) (thickness 0.18)) (justify left)))')
 
     return f'''(kicad_pcb (version 20240108) (generator "pcbnew") (generator_version "8.0")
   (general (thickness 1.6) (legacy_teardrops no))
