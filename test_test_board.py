@@ -32,3 +32,49 @@ def test_key_grid_pitch():
     _, y1 = tb.key_xy(1, 0)
     assert abs((x1 - x0) - tb.KEY_PITCH) < 1e-6
     assert abs((y1 - y0) - tb.KEY_PITCH) < 1e-6
+
+
+def test_every_matrix_position_has_a_diode_in_the_right_direction():
+    """Diode anode to column, cathode to row -- the direction current flows
+    when a driven column goes high. Reversed diodes give a matrix that reads
+    nothing, and it is invisible until the board is assembled.
+
+    Position (0, 2) is excluded from the SWxx/COL assertions: the EC11's
+    integrated push switch occupies that matrix position instead of an
+    ordinary SWxx (see the design spec and build_nets()'s own note), so
+    there is no SW02 to assert against. Its diode (D02) and the encoder's
+    press wiring are asserted separately below.
+    """
+    nets = tb.build_nets()
+    for r in range(tb.ROWS):
+        for c in range(tb.COLS):
+            d = f"D{r}{c}"
+            assert (d, "K") in nets[f"ROW{r}"], f"{d} cathode not on ROW{r}"
+            if (r, c) == (0, 2):
+                continue          # the EC11's push switch takes this position
+            sw = f"SW{r}{c}"
+            assert (sw, "1") in nets[f"COL{c}"], f"{sw} not on COL{c}"
+            assert (d, "A") in nets[f"SW{r}{c}_N"], f"{d} anode not on {sw}"
+
+    # the encoder press is an ordinary matrix key: COL2 -> ENC1 -> D02 -> ROW0
+    assert ("ENC1", "4") in nets["COL2"]
+    assert ("ENC1", "5") in nets["SW02_N"]
+    assert ("D02", "A") in nets["SW02_N"]
+
+
+def test_led_chain_is_serial_and_nine_long():
+    nets = tb.build_nets()
+    assert ("RGB1", "DIN") in nets["LEDD1"]
+    for i in range(1, tb.LED_COUNT):
+        net = f"LEDD{i + 1}"
+        assert (f"RGB{i}", "DOUT") in nets[net], f"RGB{i} DOUT missing from {net}"
+        assert (f"RGB{i + 1}", "DIN") in nets[net], f"RGB{i+1} DIN missing from {net}"
+    assert f"LEDD{tb.LED_COUNT + 1}" not in nets, "chain longer than the matrix"
+
+
+def test_leds_are_on_vsys_not_3v3():
+    """SK6812MINI-E specifies VDD 3.7-5.5V; +3V3 is below its minimum."""
+    nets = tb.build_nets()
+    for i in range(1, tb.LED_COUNT + 1):
+        assert (f"RGB{i}", "VDD") in nets["VSYS"], f"RGB{i} not on VSYS"
+        assert (f"RGB{i}", "VDD") not in nets.get("+3V3", []), f"RGB{i} on +3V3"
