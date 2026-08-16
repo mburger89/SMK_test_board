@@ -21,6 +21,7 @@ WHAT IS UNVERIFIED
   is 3.7V, so the LEDs may misbehave on a low cell. Inherited from the part
   choice, not a defect here.
 """
+import math
 import os
 import re
 import sys
@@ -638,6 +639,137 @@ def _socket_back_courtyard():
     return tuple(float(g) for g in m.groups())
 
 
+# ---- generic pad-obstacle reading + clearance search -----------------
+# Controller review round 2 on Task 6: the per-LED decoupling cap's
+# position was found by a one-off scratch script checked against the
+# Gateron socket's obstacles only, and never re-checked at row0/col2,
+# whose real neighbour is the EC11, not a socket -- C3 landed 0.05mm short
+# of clearance against the EC11's own NPTH leg. The fix is not to nudge
+# C3's number by hand (that fixes this board and leaves the same hole in
+# the next encoder position) but to make the search itself read whichever
+# footprint is actually there, the same way _socket_back_courtyard() reads
+# the Gateron's courtyard instead of hand-copying it.
+_PAD_OBSTACLE_RE = re.compile(
+    r'\(pad "[^"]*" (?:np_)?(?:thru_hole|smd) (\S+) \(at ([-\d.]+) ([-\d.]+)'
+    r'(?: [-\d.]+)?\) \(size ([\d.]+) ([\d.]+)\)')
+
+
+def _pad_obstacles(text):
+    """Every pad (SMD copper or NPTH/thru-hole) in a footprint's own
+    emitted text, as local (kind, cx, cy, ...) obstacles: ("circle", cx,
+    cy, r) for round pads/holes, ("rect", cx, cy, w, h) otherwise. Read
+    from the footprint's own s-expression output, not hand-copied --
+    works for anything built from gm's pad()/npth() (gm.fp_gateron, and
+    this module's own _fp_ec11_vertical, since both emit that same pad
+    line shape)."""
+    out = []
+    for shape, x, y, sx, sy in _PAD_OBSTACLE_RE.findall(text):
+        x, y, sx, sy = float(x), float(y), float(sx), float(sy)
+        if shape == "circle":
+            out.append(("circle", x, y, sx / 2))
+        else:
+            out.append(("rect", x, y, sx, sy))
+    return out
+
+
+def _probe_obstacles(build_fn, *args, **kwargs):
+    """_pad_obstacles(), against a fresh probe build of `build_fn` -- with
+    gm's UUID counter snapshotted/restored around the call, so probing
+    doesn't shift every UUID emitted by the real placement that follows
+    (same technique generate_macropad_mini.py's own _probe() uses)."""
+    ctr = gm._ctr[0]
+    try:
+        text = build_fn(*args, **kwargs)
+    finally:
+        gm._ctr[0] = ctr
+    return _pad_obstacles(text)
+
+
+def _rect_circle_clearance(rx, ry, rw, rh, cx, cy, r):
+    nx = min(max(cx, rx - rw / 2), rx + rw / 2)
+    ny = min(max(cy, ry - rh / 2), ry + rh / 2)
+    return math.hypot(cx - nx, cy - ny) - r
+
+
+def _rect_rect_clearance(ax, ay, aw, ah, bx, by, bw, bh):
+    return max(abs(ax - bx) - (aw / 2 + bw / 2), abs(ay - by) - (ah / 2 + bh / 2))
+
+
+def _worst_clearance(cx, cy, cw, ch, obstacles):
+    worst = float("inf")
+    for kind, *rest in obstacles:
+        if kind == "circle":
+            ox, oy, r = rest
+            worst = min(worst, _rect_circle_clearance(cx, cy, cw, ch, ox, oy, r))
+        else:
+            ox, oy, ow, oh = rest
+            worst = min(worst, _rect_rect_clearance(cx, cy, cw, ch, ox, oy, ow, oh))
+    return worst
+
+
+def _best_clear_offset(obstacles, near_x, near_y, w, h, max_dist=6.0, step=0.2,
+                       min_clear=0.3):
+    """Grid-search a w x h box within `max_dist` of (near_x, near_y) --
+    typically the LED's own local position, since these parts go "beside
+    their LED"/"beside the encoder" -- for the position CLOSEST to
+    (near_x, near_y) that clears every obstacle (local coordinates, from
+    _probe_obstacles()) by at least `min_clear` (0.3mm: comfortably above
+    KiCad's default 0.25mm hole-clearance rule).
+
+    Nearest-that-clears, not best-clearance-in-range: an earlier version
+    of this function picked the single best-clearing point in the whole
+    search box, which is a real bug, not a style choice -- it has no
+    reason to stay near (near_x, near_y) at all, so it reliably runs to
+    the search box's own far edge (wherever obstacles happen to be
+    sparsest), which for a part meant to sit "beside" something is
+    exactly backwards. Caught by test_no_unexpected_courtyard_overlaps:
+    a per-LED cap at row1/col0, searched only against ITS OWN key's
+    obstacles, drifted the full 6mm north and landed inside row0/col0's
+    switch courtyard -- a real neighbour this function's obstacle list
+    never knew about, because "maximize clearance" doesn't know to stop.
+
+    Falls back to the best clearance found if nothing in range clears
+    min_clear (so the caller always gets a point, and check_overlaps()
+    still catches an unsafe fallback rather than this function hiding it)."""
+    n = int(max_dist / step)
+    best_safe = None       # (x, y, clearance, distance) -- nearest OK point
+    best_overall = None    # (x, y, clearance) -- fallback if none clear
+    for ix in range(-n, n + 1):
+        for iy in range(-n, n + 1):
+            dx, dy = ix * step, iy * step
+            dist = math.hypot(dx, dy)
+            if dist > max_dist:
+                continue
+            x, y = near_x + dx, near_y + dy
+            c = _worst_clearance(x, y, w, h, obstacles)
+            if best_overall is None or c > best_overall[2]:
+                best_overall = (x, y, c)
+            if c >= min_clear and (best_safe is None or dist < best_safe[3]):
+                best_safe = (x, y, c, dist)
+    return best_safe[:3] if best_safe is not None else best_overall
+
+
+def _cap_offsets_near(refs, obstacles, near_x, near_y, w=3.0, h=1.8, max_dist=6.0):
+    """Local (x, y) for a run of RC_0603-sized caps near (near_x, near_y),
+    each found by _best_clear_offset() against `obstacles` PLUS every
+    offset already returned earlier in this same call -- so a second cap
+    doesn't land on top of the first. Returns {ref: (x, y)}; the caller
+    does the actual footprint emission/placement bookkeeping.
+
+    `max_dist` must reach past whatever body obstacle surrounds
+    (near_x, near_y), or every point in range reads as unsafe and the
+    search falls back to whichever edge point overlaps it least -- the
+    caller is responsible for sizing it (e.g. the EC11 body obstacle
+    below is +-7.7 x +-6.5, so its caller passes max_dist=9.0)."""
+    obs = list(obstacles)
+    out = {}
+    for ref in refs:
+        x, y, _clearance = _best_clear_offset(obs, near_x, near_y, w, h, max_dist=max_dist)
+        out[ref] = (x, y)
+        obs = obs + [("rect", x, y, w, h)]
+    return out
+
+
 # ref -> (x, y, side, rot). What placed() returns; also what the overlap
 # scan and the "everything inside the outline" check both read.
 PLACED = {}
@@ -684,6 +816,24 @@ def build_pcb():
     PLACED.clear()
     POS_OF_REF.clear()
     socket_crtyd = _socket_back_courtyard()
+    # Real pad/hole obstacle sets, read from each footprint's own emitted
+    # text (not hand-copied) -- one per kind of neighbour a decoupling cap
+    # can land beside. Every normal key has a Gateron socket; row0/col2 has
+    # an EC11 instead, and the search below picks whichever one is
+    # actually there.
+    sw_obstacles = _probe_obstacles(gm.fp_gateron, "REF**", 0, 0, None, None, None)
+    enc_obstacles = _probe_obstacles(_fp_ec11_vertical, "REF**", 0, 0, None, {})
+    # EC11's own BODY (its silk envelope, +-7.7 x +-6.5 -- same numbers
+    # _place(enc, ...) below uses), not just its discrete pins/legs. The
+    # switch doesn't need this: everything that shares its back courtyard
+    # with a switch (LED, diode, cap) sits on the BACK, physically
+    # separated from the switch's own housing on the FRONT. The EC11 and
+    # its debounce caps are BOTH front-side, competing for the same real
+    # space its body occupies -- without this, the search reads the
+    # origin (which has no pin on it) as clear and places a cap directly
+    # under the encoder's own package, the same class of bug the LED
+    # courtyard fix below addresses for the switch/LED/cap side.
+    enc_obstacles = enc_obstacles + [("rect", 0, 0, 7.7 * 2, 6.5 * 2)]
 
     nets = build_nets()
     # net name -> sequential id. This board's net names (ROW0, LEDD3, ...)
@@ -716,6 +866,17 @@ def build_pcb():
     # (same KEY_PITCH=19.05, same footprints) -- proven safe against both
     # the neighbouring keys (>1.5mm clear at every pitch) and the owning
     # switch's real pads (0.29mm clear, per that module's own comment).
+    # -6.025mm: the north-side window centre, derived in
+    # generate_kbd_rp2040.py:2050 as -(5.75+6.30)/2 -- the position that
+    # file's own build_pcb() ships, after trying (and abandoning, per its
+    # comment there) PITCH/2 south and 5.9mm/5.4mm south. Controller review
+    # rounds 1 and 2 on Task 6: round 1 quoted the file's *prose* changelog
+    # entry (lines 163-170) for "5.9mm south", which turned out to describe
+    # that earlier, superseded attempt; round 2 corrected it to the actual
+    # shipped offset once the code (not just the comment) was checked.
+    # South put the LED's own pads inside the switch's leg NPTH holes by up
+    # to 1.31mm -- north is on the empty side, away from both leg holes.
+    LED_OFFSET_Y = -6.025
     for r in range(ROWS):
         for c in range(COLS):
             kx, ky = key_xy(r, c)
@@ -726,21 +887,24 @@ def build_pcb():
             _place(d, "B", dx, dy, 2.5, 1.15, rot=270)
             POS_OF_REF[d] = (r, c)
 
-            if (r, c) == (0, 2):
+            is_encoder = (r, c) == (0, 2)
+            if is_encoder:
                 enc = "ENC1"
                 enc_pinnet = {n: net_on(enc, str(n)) for n in range(1, 6)}
                 fps.append(_fp_ec11_vertical(enc, kx, ky, gm.U("sym", enc), enc_pinnet))
                 _place(enc, "F", kx, ky, 7.7, 6.5)
                 POS_OF_REF[enc] = (r, c)
+                neighbor_obstacles = enc_obstacles
 
                 # Encoder debounce (C10/C11, build_nets() addition from
                 # controller review round 1): 100nF A-to-GND, B-to-GND, per
-                # the design spec's Sec.2. Positions found the same way as
-                # the per-LED caps -- grid search against EC11's own real
-                # pin/leg obstacles, mirrored either side of the encoder,
-                # front side (same side as ENC1 and the XIAO trace they
-                # decouple, no extra via).
-                for debounce, (ddx, ddy) in [("C10", (-5.8, -4.7)), ("C11", (5.8, -4.7))]:
+                # the design spec's Sec.2. Positions read from EC11's own
+                # real pin/leg obstacles via _cap_offsets_near(), not
+                # hand-picked -- front side (same side as ENC1 and the
+                # XIAO trace they decouple, no extra via).
+                debounce_xy = _cap_offsets_near(["C10", "C11"], enc_obstacles, 0, 0,
+                                                max_dist=9.0)
+                for debounce, (ddx, ddy) in debounce_xy.items():
                     dcx, dcy = kx + ddx, ky + ddy
                     fps.append(gm.fp_0603(debounce, "100n", dcx, dcy, 0,
                                           gm.U("sym", debounce),
@@ -754,15 +918,8 @@ def build_pcb():
                 sw_xlo, sw_ylo, sw_xhi, sw_yhi = socket_crtyd
                 _place_box(sw, "B", kx, ky, sw_xlo, sw_xhi, sw_ylo, sw_yhi)
                 POS_OF_REF[sw] = (r, c)
+                neighbor_obstacles = sw_obstacles
 
-            # 5.9mm south of key centre (+Y, per key_xy's own convention),
-            # not key centre: centre lands on the switch's own boss NPTH
-            # and the LED illuminates nothing. Controller review round 1
-            # on Task 6 corrected this from the original (kx, ky) --
-            # 5.9mm south is the standard south-facing SMD LED offset for
-            # MX-compatible/low-profile switches; see
-            # generate_kbd_rp2040.py:163 in the sibling keyboard project.
-            LED_OFFSET_Y = 5.9
             i = r * COLS + c + 1
             rgb = f"RGB{i}"
             lx, ly = kx, ky + LED_OFFSET_Y
@@ -773,14 +930,32 @@ def build_pcb():
             POS_OF_REF[rgb] = (r, c)
 
             # Per-LED 100nF decoupling (C1..C9, build_nets() addition from
-            # controller review round 1). Position found by grid search
-            # against the socket's real obstacles (3 NPTH + 2 SMD pads,
-            # read via _socket_back_courtyard()'s sibling technique --
-            # see the search script referenced in the fix report) and the
-            # LED's own (now-moved) pads: (+4.8, +2.3) from key centre
-            # clears all of them by >=0.98mm.
+            # controller review round 1). Controller review round 2: the
+            # position search now reads whichever footprint is actually at
+            # this key (the Gateron socket for 8 of the 9 keys, the EC11
+            # at row0/col2) plus the LED's own courtyard, rather than one
+            # offset validated against the socket only and reused
+            # unchecked at row0/col2 -- that's what left C3 (this key's
+            # cap) 0.05mm short of clearance against ENC1's own leg last
+            # round.
+            #
+            # The LED's real COURTYARD (its assembly keepout, same 3.65 x
+            # 1.87 half-extent passed to _place() above), not just its
+            # four pads: a cap centred exactly on the LED's own origin has
+            # clear COPPER (the LED's own middle has none -- its pads sit
+            # out at local x=+-2.725, which is what the light escapes
+            # between) but that is still the LED's own package footprint,
+            # and two components cannot occupy the same physical footprint
+            # regardless of whether their copper happens to miss. An
+            # earlier version of this search checked only the four pads
+            # and put C1 exactly on top of RGB1's own origin for precisely
+            # this reason.
+            led_courtyard_obstacle = [("rect", 0, LED_OFFSET_Y, 3.65 * 2, 1.87 * 2)]
             cap = f"C{i}"
-            cx, cy = kx + 4.8, ky + 2.3
+            cap_xy = _cap_offsets_near([cap], neighbor_obstacles + led_courtyard_obstacle,
+                                       0, LED_OFFSET_Y)
+            ccx, ccy = cap_xy[cap]
+            cx, cy = kx + ccx, ky + ccy
             fps.append(gm.fp_0603(cap, "100n", cx, cy, 0, gm.U("sym", cap),
                                   net_on(cap, "1"), net_on(cap, "2"), side="B"))
             _place(cap, "B", cx, cy, 1.5, 0.9)
