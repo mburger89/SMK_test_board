@@ -51,10 +51,37 @@ damage the XIAO the moment it's powered, and there is no way to undo that.
   Result: ______________________________________________
 
 - [ ] **1b. VSYS–GND continuity.** Multimeter in continuity/low-resistance
-  mode, board unpowered, XIAO **not yet seated**. Probe VSYS to GND at the
-  JST-PH battery connector or the XIAO footprint's VSYS/GND pads. Expect
-  **no continuity** (open, or a normal high-impedance reading — not a dead
-  short).
+  mode, board unpowered, XIAO **not yet seated**. Probe VSYS to GND at
+  `J1` (the JST-PH battery connector) or at **`J2`, the two through-hole
+  pads silkscreened `BAT+` / `BAT-` beside `U1`** — `J2` pin 1 (`BAT+`,
+  the square pad) is VSYS, pin 2 (`BAT-`) is GND. Do not look for a VSYS
+  pad on the XIAO footprint: there isn't one and there can't be, because
+  the module's battery terminals are on its underside (see Step 1b-ii).
+  Expect **no continuity** (open, or a normal high-impedance reading — not
+  a dead short).
+
+  Note the reading will not be a true open: `R1`/`R2`, the VBAT sense
+  divider, sit across VSYS→GND, so expect roughly **400 kΩ**. A dead short
+  or a few ohms is the failure this step is looking for.
+
+  Result: ______________________________________________
+
+- [ ] **1b-ii. Solder the two battery flying leads.** With the XIAO
+  **out** of its headers, solder two short insulated wires to `J2`:
+  `BAT+` (square pad) and `BAT-`. Leave them long enough to reach the
+  module's underside pads with it seated, and **do not connect a cell
+  yet.**
+
+  Then seat the XIAO and solder the free ends to its **underside**
+  `BAT+` / `BAT-` solder pads. Getting these two backwards puts a Li-ion
+  cell into the XIAO reversed — check the silk twice: the square pad and
+  the drawn `+` are `BAT+` / VSYS; the round pad and the drawn `-` are
+  `BAT-` / GND.
+
+  This is the only path from the JST connector to the module. Without it
+  the board runs on USB only, the onboard charger never sees the cell, and
+  the LED chain and level shifter are unpowered whenever no cell is
+  fitted.
 
   Result: ______________________________________________
 
@@ -404,7 +431,9 @@ cell and a real divider before this board. As with Step 9, a plausible
 partial failure needs somewhere to point, not just a checkbox.
 
 `BatteryMonitor` reads GPIO0 (ADC1_CH0), doubles it (the board's VBAT÷2
-divider — `vbatDividerRatio = 2` in `BatteryMonitor.swift`), then maps
+divider — `R1`/`R2`, two 200 kΩ 0603s beside `U1`, VSYS → R1 → midpoint →
+R2 → GND with the midpoint on `U1` pad 1; `vbatDividerRatio = 2` in
+`BatteryMonitor.swift` is correct for it), then maps
 3300mV–4200mV linearly to 0–100% and clamps outside that range. This is a
 rough single-cell Li-ion approximation, not a calibrated discharge curve —
 don't expect a precise number, but a **stable, plausible, slowly-falling**
@@ -427,6 +456,9 @@ one.
 - [ ] **10c. If it's stuck at 0%:** the ADC reading is at or below
   3300mV/2 at the pin — check the VBAT divider's wiring and that the cell
   is actually connected/charged, before suspecting the ADC/firmware.
+  Concretely: measure `U1` pad 1 against GND with a charged cell fitted.
+  It should read about half the cell voltage (~1.9–2.1 V). Near 0 V means
+  `R1` is open or unpopulated; near full cell voltage means `R2` is.
 
   Result: ______________________________________________
 

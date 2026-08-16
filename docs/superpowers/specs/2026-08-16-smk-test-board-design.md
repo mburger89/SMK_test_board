@@ -88,8 +88,15 @@ Note that the reference board's GPIO map cannot be reused: it needs 17 pins
 
 An EC11 with integrated push switch. A and B go to GPIO17 and GPIO19, each
 with a 100 nF capacitor to ground for contact debounce, and pulled up — the
-ESP32-C6's internal pull-ups are sufficient, so external resistors are
-footprinted but may be left unpopulated.
+ESP32-C6's internal pull-ups are sufficient, so **there are no external
+pull-up resistors on this board and no footprints for them.** An earlier
+revision of this section said they were "footprinted but may be left
+unpopulated"; no such footprints were ever drawn, and the BOM's matching
+"2 × 10 kΩ resistors" line was for parts that had nowhere to go. Corrected
+rather than added to: this section's own reasoning is that the internal
+pull-ups suffice, firmware does not read A/B until phase 2, and two more
+footprints on a bring-up fixture is two more things to get wrong for no
+benefit. If phase 2 finds the internal pull-ups marginal, add them then.
 
 The push switch is wired as the matrix position at row 0 / col 2, with its own
 diode like any other key.
@@ -136,13 +143,45 @@ defect to fix here — the keyboard project carries the same note.
 ## 4. Power and battery
 
 USB-C on the XIAO powers the board when tethered. For untethered BLE testing,
-a single-cell Li-ion connects to the XIAO's BAT+/BAT− pads through a JST-PH
-2-pin connector on the PCB; the XIAO's onboard charger handles charging.
+a single-cell Li-ion connects through a JST-PH 2-pin connector (`J1`) on the
+PCB, which feeds the board's VSYS rail; the XIAO's onboard charger handles
+charging.
 
-Battery *monitoring* costs nothing: the XIAO already carries a **1:2 divider
-on A0**, which is exactly the halved VBAT that `BatteryMonitor` assumes ("the
-board halves VBAT before it reaches the ADC pin"). No external divider, one
-pin, and the existing firmware maths is correct as written.
+VSYS reaches the XIAO through **`J2`, a labelled 2-pin through-hole pad pair**
+beside `U1`, and two short flying leads hand-soldered from it to the module's
+BAT+/BAT− terminals. This is not a stylistic choice: those terminals are
+solder pads on the module's **underside** and the XIAO seats on female
+headers, so no PCB pad can ever mate with them — `XIAO_ESP32C6_HEADERS` is 14
+pads with no BAT pad, and that is correct. Until `J2` existed, nothing tied
+VSYS to the XIAO at all: `J1` fed the nine SK6812 VDD pins, their decoupling
+caps, `C_BULK` and `U2`'s VCC, and the module was not in that circuit. The
+board could not run untethered, the onboard charger never saw the cell, and on
+USB with no cell fitted the whole LED chain and the level shifter were
+unpowered.
+
+Battery *monitoring* needs an **external divider, and this board now carries
+one**: `R1`/`R2`, two 200 kΩ 0603s, VSYS → R1 → midpoint → R2 → GND with the
+midpoint on `U1` pad 1 (D0 / GPIO0 / ADC1_CH0).
+
+**Correction.** This section previously claimed the XIAO "already carries a
+1:2 divider on A0" and that no external divider was needed. That is false for
+this module. The on-module battery-sense divider belongs to the earlier XIAO
+ESP32-C3/S3 generation; Seeed's battery-monitoring guidance for the **XIAO
+ESP32-C6** calls for an external 200 kΩ/200 kΩ pair from the battery rail to
+an ADC pin. Acting on the wrong premise, `build_nets()` referenced
+`PIN["VBAT_SENSE"]` zero times — the pin drew a schematic port and nothing
+else — so U1 pad 1 was left floating while firmware read ADC1_CH0 as a
+battery voltage. Left alone it would have produced plausible-looking garbage
+readings, and it would have misled the next board too.
+
+200 kΩ is the value, not 100 k or 10 k: it halves VSYS exactly, and the whole
+divider draws only ~10 µA at 4.2 V, which matters on the coin-sized cell this
+board is for.
+
+Firmware is unaffected and must not change: `vbatDividerRatio = 2` is exactly
+right for a 1:2 divider, which is what R1/R2 are. The firmware assumption
+("the board halves VBAT before it reaches the ADC pin") is now true of the
+board, where before it was true of nothing.
 
 ## 5. KiCad project and mechanical
 
@@ -157,16 +196,26 @@ properties — back clearance, cell clearance, hole clearance, grouping.
 
 This project follows that shape: `generate_test_board.py` plus
 `test_test_board.py`, writing `smk_test_board/smk_test_board.kicad_{pro,sch,pcb}`
-in KiCad 8 format (which KiCad 9/10 read natively, as the siblings do).
+in KiCad 8 format (which KiCad 9/10 read natively, as the siblings do),
+plus an `fp-lib-table` and a project-local `kbd.pretty` so both footprint
+libraries the board references resolve from `${KIPRJMOD}` and the project is
+self-contained. (The `.kicad_pro` and the lib table were promised here but not
+written for several revisions; their absence is what produced DRC's 46
+`lib_footprint_issues` warnings.)
 
-- Two layers, roughly 70 × 70 mm, keys on a 19.05 mm pitch.
+- Two layers, **76.0 × 113.16 mm** (as generated — the estimate here was
+  "roughly 70 × 70 mm"; the board's real size falls out of the placement,
+  since `build_pcb()` derives the outline from the extents of everything it
+  places plus a 5 mm margin), keys on a 19.05 mm pitch.
 - **Hot-swap sockets**, matching the available footprint and the sibling
   boards, so switches can be moved between projects.
 - The XIAO mounts on two 1×7 female headers rather than being soldered to its
   castellated pads, so it can be removed. This is the same board used for
   firmware bring-up; keeping its USB port and BOOT/RESET buttons reachable
   matters more than 5 mm of height.
-- Mounting holes: 4 × M3 at the corners.
+- Mounting holes: 4 × **M2** at the corners (2.4 mm NPTH, `gm.fp_hole` /
+  `MountingHole_M2`). This said M3; the footprint the generator has always
+  used is M2, and hardware must match the board, not the prose.
 
 **Footprints: reuse, don't redraw.** `kbd.pretty` already carries
 fab-proven footprints for everything except two parts:
@@ -209,10 +258,13 @@ included.
 
 To source: 9 × SK6812MINI-E, 9 × Gateron KS-33 hot-swap sockets, 1 × level
 shifter for the LED data line (same part the keyboard project uses), 2 × 1×7
-female headers, 1 × JST-PH 2-pin connector, **11 × 100 nF** capacitors (9 for
-LED decoupling, 2 for encoder debounce), 1 × 100 µF bulk capacitor at the LED
-chain entry, 2 × 10 kΩ resistors (encoder pull-ups, likely unpopulated),
-4 × M3 standoffs, and low-profile keycaps.
+female headers, 1 × JST-PH 2-pin connector, **12 × 100 nF** capacitors (9 for
+LED decoupling, 2 for encoder debounce, 1 for the level shifter U2's own VCC),
+1 × 100 µF bulk capacitor at the LED
+chain entry, 2 × 200 kΩ resistors (the VBAT sense divider, §4), 4 × **M2**
+standoffs, and low-profile keycaps. Also two short lengths of insulated wire
+for the `J2` → XIAO BAT+/BAT− flying leads (§4). There are **no** 10 kΩ
+encoder pull-ups: see §2.
 
 The sibling `~/esp/SMK_macro_pad/smk_macropad/JLCPCB_Sourcing_Report.md` is
 the precedent for part selection and should be consulted for the level

@@ -89,9 +89,26 @@ run(
 )
 print("gerbers plotted")
 
-# 3. Drill files (Excellon, metric, PTH/NPTH split -- the board has both:
-# switch/diode/LED/header pads are PTH, the four M2 mounting holes are
-# NPTH). Also emit a map + report for JLCPCB's reviewers to cross-check.
+# 3. Drill files (Excellon, metric, PTH/NPTH split -- the board has both).
+#
+# PTH: the 14 XIAO header pads (U1), the EC11's 5 signal pins (ENC1), and the
+# 2 battery flying-lead pads (J2) -- 21 plated holes. The switch, diode and
+# LED pads are all SMD and drill nothing; an earlier version of this comment
+# said "switch/diode/LED/header pads are PTH", which is wrong for three of
+# those four.
+#
+# NPTH: 30 unplated holes -- the four M2 corner mounting holes (2.4mm,
+# gm.fp_hole), the EC11's two 3.2mm mounting-post legs, and the Gateron
+# hot-swap sockets' own mechanical holes (one 5.2mm centre plus two 3.0mm
+# switch-leg holes per socket, x8 sockets = 24). Cross-check against
+# gerbers/drill-report.txt after every export: 21 plated / 30 unplated.
+#
+# Neither count includes the nine SK6812MINI-E light windows: those are milled
+# Edge.Cuts slots, not drilled holes, and they leave the board on the
+# Edge_Cuts gerber rather than in either drill file. If a future revision ever
+# shows an empty/near-empty Edge_Cuts layer, the LEDs have lost their windows.
+#
+# Also emit a map + report for JLCPCB's reviewers to cross-check.
 run(
     "pcb", "export", "drill",
     "--output", OUT + os.sep,
