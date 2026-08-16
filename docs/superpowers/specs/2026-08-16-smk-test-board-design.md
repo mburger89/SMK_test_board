@@ -100,26 +100,38 @@ a board whose purpose is testing existing functionality.
 
 ## 3. LED chain
 
-Nine WS2812B-compatible RGB LEDs in a chain, data in on GPIO20.
+Nine **SK6812MINI-E** reverse-mount RGB LEDs, one under each matrix position,
+chained with data in on GPIO20.
 
-**The LEDs sit along the board edge, not under the switches.** The firmware's
-only requirement is that the chain length equals `rowCount × colCount`; it has
-no notion of physical placement. Per-key RGB under Gateron low-profile
-switches would mean reverse-mount SK6812MINI-E parts aligned to switch
-cutouts — real layout risk for no testing benefit, since the goal is
-exercising the RMT driver, not lighting keycaps.
+Per-key placement rather than an edge strip, because the sibling keyboard
+project has already fabbed this exact part: `kbd.pretty` carries a proven
+`SK6812MINI_E` footprint and `~/esp/SMK_Keyboard/reroute_led_field.py` exists
+for routing a field of them. The layout risk that would otherwise argue for an
+edge strip is already retired, and per-key is what the firmware's
+`rowCount × colCount` model actually describes.
 
-**Powered from 3.3 V**, not 5 V. WS2812B at 5 V wants data ≥ 3.5 V and the C6
-drives 3.3 V; that margin is the classic source of intermittent first-LED
-corruption. Running the chain at 3.3 V keeps the data line in spec at the cost
-of some brightness, which a test fixture does not care about. Each LED gets a
-100 nF decoupling capacitor, with a 10 µF bulk capacitor at the head of the
-chain.
+**Power comes from the battery/USB rail (VSYS, via the XIAO's BAT pad), not
+from 3.3 V.** This corrects an earlier draft of this spec. SK6812MINI-E's
+datasheet specifies **VDD 3.7–5.5 V**, so a 3.3 V rail is below minimum — the
+sibling keyboard's own schematic note says exactly this, and feeds its chain
+from VSYS rather than its 3.3 V LDO for both current and voltage reasons.
 
-**Current budget:** nine LEDs at full white would draw roughly 500 mA, which
-is more than the XIAO's regulator should supply on battery. The firmware must
-cap brightness; budget ~200 mA at moderate levels. This is a firmware
-constraint, not a board one, and belongs in the bring-up notes.
+A **level shifter on DIN** carries the C6's 3.3 V data up to the LED rail,
+matching the keyboard project's approach. Nine LEDs is few enough that a bare
+3.3 V DIN would probably work, but "probably" is how intermittent first-LED
+corruption gets designed in.
+
+Each LED gets a 100 nF decoupling capacitor, with a 100 µF bulk capacitor at
+the chain entry.
+
+**Current budget:** 12 mA per channel × 3 × 9 LEDs = **324 mA at full white**.
+Firmware must cap brightness rather than the board carrying that continuously.
+
+**Known caveat, inherited from the part choice:** VSYS is the Li-ion cell, and
+a discharging cell drops below SK6812MINI-E's 3.7 V minimum well inside its
+normal range. The LEDs may misbehave on a low battery even with brightness
+capped. That is a real limitation of per-key RGB on a single-cell board, not a
+defect to fix here — the keyboard project carries the same note.
 
 ## 4. Power and battery
 
@@ -134,23 +146,38 @@ pin, and the existing firmware maths is correct as written.
 
 ## 5. KiCad project and mechanical
 
-KiCad 9 project at the repo root: `SMK_test_board.kicad_pro`, `.kicad_sch`,
-`.kicad_pcb`, plus a project-local `SMK_test_board.pretty` footprint library.
+**The board is generated from Python, not drawn in the GUI**, following the
+sibling projects: `~/esp/SMK_macro_pad/generate_macropad.py` (2156 lines) is a
+base module that emits raw KiCad s-expressions, and
+`generate_macropad_mini.py` imports it as `gm` to reuse its placement,
+side-mirroring and clearance helpers. The `.kicad_sch`/`.kicad_pcb` files are
+build artifacts of the generator, not the source of truth, and
+`test_macropad_mini.py` (532 lines) is a pytest suite asserting geometric
+properties — back clearance, cell clearance, hole clearance, grouping.
+
+This project follows that shape: `generate_test_board.py` plus
+`test_test_board.py`, writing `smk_test_board/smk_test_board.kicad_{pro,sch,pcb}`
+in KiCad 8 format (which KiCad 9/10 read natively, as the siblings do).
 
 - Two layers, roughly 70 × 70 mm, keys on a 19.05 mm pitch.
-- PCB-mount switches, no plate.
+- **Hot-swap sockets**, matching the available footprint and the sibling
+  boards, so switches can be moved between projects.
 - The XIAO mounts on two 1×7 female headers rather than being soldered to its
   castellated pads, so it can be removed. This is the same board used for
   firmware bring-up; keeping its USB port and BOOT/RESET buttons reachable
   matters more than 5 mm of height.
 - Mounting holes: 4 × M3 at the corners.
 
-**Footprint risk, stated up front.** Stock KiCad ships neither a Gateron
-low-profile switch nor a XIAO ESP32-C6 footprint. Both must come from a
-third-party keyboard library or be drawn by hand, and **both must be checked
-against the physical parts before fabrication** — a wrong switch footprint is
-the standard way to receive a board nothing fits into. Print the layout at
-1:1 and offer up a real switch and a real XIAO.
+**Footprints: reuse, don't redraw.** `kbd.pretty` already carries
+fab-proven footprints for everything except two parts:
+`SW_Gateron_KS33_HS` (Gateron low profile *is* KS-33, hot-swap),
+`SK6812MINI_E`, `D_SOD-123_Back`, `RC_0603`, `LED_0603`, `MountingHole_M2`,
+`JST_SH_SM02B_2pin_Back`.
+
+Only the **XIAO ESP32-C6** and the **EC11 encoder** footprints do not exist
+anywhere in these repos and must be created. Those two — and only those two —
+carry the "board arrives and nothing fits" risk, so **both must be printed at
+1:1 and checked against the physical parts before fabrication.**
 
 ## 6. Firmware: a new board configuration
 
@@ -176,15 +203,20 @@ the firmware never sees it — but its matrix block is what makes a written
 
 ## 8. Bill of materials and fabrication
 
-On hand: XIAO ESP32-C6, 8 × Gateron low-profile switches, 1 × EC11, and
-**9 × 1N4148** diodes — one per matrix position, the encoder's push switch
+On hand: XIAO ESP32-C6, 8 × Gateron low-profile (KS-33) switches, 1 × EC11,
+and **9 × 1N4148** diodes — one per matrix position, the encoder's push switch
 included.
 
-To source: 9 × WS2812B-compatible LEDs (SK6812 is the friendlier choice at
-3.3 V), 2 × 1×7 female headers, 1 × JST-PH 2-pin connector, **11 × 100 nF**
-capacitors (9 for LED decoupling, 2 for encoder debounce), 1 × 10 µF bulk
-capacitor, 2 × 10 kΩ resistors (encoder pull-ups, likely unpopulated), 4 × M3
-standoffs, and low-profile keycaps.
+To source: 9 × SK6812MINI-E, 9 × Gateron KS-33 hot-swap sockets, 1 × level
+shifter for the LED data line (same part the keyboard project uses), 2 × 1×7
+female headers, 1 × JST-PH 2-pin connector, **11 × 100 nF** capacitors (9 for
+LED decoupling, 2 for encoder debounce), 1 × 100 µF bulk capacitor at the LED
+chain entry, 2 × 10 kΩ resistors (encoder pull-ups, likely unpopulated),
+4 × M3 standoffs, and low-profile keycaps.
+
+The sibling `~/esp/SMK_macro_pad/smk_macropad/JLCPCB_Sourcing_Report.md` is
+the precedent for part selection and should be consulted for the level
+shifter and passives rather than choosing fresh parts.
 
 Fabrication is JLCPCB, bare boards only — hand assembly, no PCBA. At this
 part count and with through-hole switches, assembly service buys nothing.
