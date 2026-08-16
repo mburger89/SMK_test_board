@@ -19,6 +19,7 @@ EXPECTED = {
     "MountingHole_M2": 1,
     "JST_SH_SM02B_2pin_Back": 2,
     "XIAO_ESP32C6_HEADERS": 14,   # 2 x 1x7, 2.54mm pitch
+    "EC11_VERTICAL": 5,   # A, C, B + 2 switch terminals
 }
 
 
