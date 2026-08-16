@@ -21,6 +21,7 @@ EXPECTED = {
     "XIAO_ESP32C6_HEADERS": 14,   # 2 x 1x7, 2.54mm pitch
     "EC11_VERTICAL": 5,   # A, C, B + 2 switch terminals
     "SOT-23-5": 5,   # level shifter (SN74AHCT1G125DBVR): OE#, A, GND, Y, VCC
+    "BAT_WIRE_PADS": 2,   # BAT+ / BAT- flying leads to the XIAO's underside
 }
 
 
@@ -73,7 +74,7 @@ def test_xiao_header_geometry():
 
 # ===================================================== library-master parity
 
-# generate_test_board.py re-renders three footprints inline as positioned PCB
+# generate_test_board.py re-renders four footprints inline as positioned PCB
 # instances (gm.py has no generator for them), each claiming to reproduce this
 # repo's own smk_test_board.pretty/<NAME>.kicad_mod. Nothing checked that, and
 # the comment above them asserted "byte-for-byte" — which was false, and false
@@ -261,6 +262,12 @@ def _inline_renders():
         "SK6812MINI_E": lambda: tb._fp_sk6812mini_tb("REF**", 0, 0, None, {}),
         "XIAO_ESP32C6_HEADERS": lambda: tb._fp_xiao_headers("REF**", 0, 0, None, {}),
         "EC11_VERTICAL": lambda: tb._fp_ec11_vertical("REF**", 0, 0, None, {}),
+        # BAT_WIRE_PADS' master was emitted FROM this renderer (the same way
+        # generate_macropad.py's export_libs() emits its own library), so this
+        # pairing starts out trivially true. It is not pointless: from here on
+        # it is what stops the renderer and the master drifting apart, which
+        # is the exact failure mode this whole test exists for.
+        "BAT_WIRE_PADS": lambda: tb._fp_bat_pads("REF**", 0, 0, None, {}),
     }
 
 

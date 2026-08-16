@@ -165,14 +165,90 @@ def build_nets():
     add("ENC_B", "C11", "1")
     add("GND", "C11", "2")
 
+    # U2's own local decoupling. Controller review (final wave): the level
+    # shifter had nothing on VCC at all -- the nearest cap was C_BULK, 19mm
+    # away down the bottom edge, which is a bulk reservoir, not local
+    # decoupling for a part switching an 800kHz-ish WS2812 data line.
+    add("VSYS", "C12", "1")
+    add("GND", "C12", "2")
+
     add("VSYS", "J1", "1")
     add("GND", "J1", "2")
+    # Bulk cap at the LED chain entry. Wired through build_nets() like every
+    # other part rather than having its nets passed straight to fp_0603():
+    # build_sch() places parts from this dict, so anything that skips it is
+    # invisible to the schematic (and to any schematic-derived BOM or
+    # netlist). C_BULK, C1-C11 and C10/C11 were all missing from the
+    # schematic for exactly that reason until the final review wave.
+    add("VSYS", "C_BULK", "1")
+    add("GND", "C_BULK", "2")
+
+    # ---- battery: JST -> VSYS -> two flying leads -> the XIAO ------------
+    # J2 is a labelled 2-pin THROUGH-HOLE pad pair beside U1 (see
+    # _fp_bat_pads()'s docstring for why no PCB pad can reach the XIAO's own
+    # underside BAT+/BAT- terminals). Without it VSYS has no source and no
+    # sink at the module: the board cannot run untethered, the XIAO's
+    # onboard charger never sees the JST cell, and on USB with no cell
+    # fitted the LED chain and level shifter are unpowered.
+    add("VSYS", "J2", "1")                        # BAT+ flying lead
+    add("GND", "J2", "2")                         # BAT- flying lead
+
+    # ---- VBAT sense divider ---------------------------------------------
+    # Two 200k 0603s: VSYS -> R1 -> VBAT_SENSE (midpoint) -> R2 -> GND, with
+    # the midpoint on U1 pad 1 (D0 / GPIO0 / ADC1_CH0).
+    #
+    # The design spec's Sec.4 used to claim the XIAO ESP32-C6 "already
+    # carries a 1:2 divider on A0" and that no external divider was needed.
+    # That is false -- it is the XIAO ESP32-C3/S3 generation that carries an
+    # on-module divider; Seeed's own ESP32-C6 battery-monitoring guidance
+    # calls for an EXTERNAL 200k/200k pair from BAT to an ADC pin. The spec
+    # has been corrected. Before this, PIN["VBAT_SENSE"] existed and drew a
+    # schematic port, but build_nets() referenced it zero times: U1 pad 1
+    # was a floating input that firmware read as a battery voltage.
+    #
+    # 200k/200k (not 100k or 10k): halves VSYS exactly, which is what
+    # firmware's `vbatDividerRatio = 2` already assumes -- firmware is
+    # correct as written and must not change -- while drawing only ~10uA at
+    # 4.2V, which matters on the coin-sized cell this board is for.
+    add("VSYS", "R1", "1")
+    add("VBAT_SENSE", "R1", "2")
+    add("VBAT_SENSE", "R2", "1")
+    add("GND", "R2", "2")
+    add("VBAT_SENSE", "U1", "1")                  # D0 / GPIO0 / ADC1_CH0
+
     # U1 pad 12 (+3V3, the XIAO's own regulated logic rail) is left
     # unwired: nothing on this board consumes regulated 3.3V -- the LEDs
     # are deliberately on VSYS (see above) and the level shifter is now a
     # single VSYS-rail part, so there is no +3V3 net at all.
     add("GND", "U1", "13")
     return nets
+
+
+# Two-pin parts that have no hand-drawn block of their own in build_sch().
+# ref -> (lib symbol, value, footprint, PCB side).
+#
+# This registry is the fix for a whole class of bug, not a convenience: the
+# schematic used to be assembled purely from hand-written per-block code, so
+# every part added to build_nets()/build_pcb() without someone also editing
+# build_sch() simply never appeared in it. That is how C1-C9, C10, C11 and
+# C_BULK -- 12 real, placed, netted parts -- ended up on the PCB and not in
+# the schematic, making any schematic-derived BOM or netlist wrong by 12
+# parts and `--schematic-parity` DRC unusable. build_sch() now auto-places
+# everything listed here, build_pcb() reads its values/footprints from the
+# same table, and test_schematic_has_every_part_the_pcb_has asserts the two
+# documents carry the identical ref set.
+AUX_PARTS = {}
+for _i in range(1, LED_COUNT + 1):
+    AUX_PARTS[f"C{_i}"] = ("C_kbd", "100n", "RC_0603", "B")   # per-LED decoupling
+AUX_PARTS["C10"] = ("C_kbd", "100n", "RC_0603", "F")          # ENC_A debounce
+AUX_PARTS["C11"] = ("C_kbd", "100n", "RC_0603", "F")          # ENC_B debounce
+AUX_PARTS["C12"] = ("C_kbd", "100n", "RC_0603", "F")          # U2 VCC decoupling
+AUX_PARTS["C_BULK"] = ("C_kbd", "100u", "RC_0603", "F")       # LED chain entry
+AUX_PARTS["R1"] = ("R_kbd", "200k", "RC_0603", "F")           # VBAT divider high
+AUX_PARTS["R2"] = ("R_kbd", "200k", "RC_0603", "F")           # VBAT divider low
+AUX_PARTS["J2"] = ("Conn_BAT2_tb", "BAT+ / BAT- flying leads",
+                   "BAT_WIRE_PADS", "F")
+del _i
 
 
 # ============================================================ SCHEMATIC ====
@@ -286,6 +362,32 @@ def build_lib_symbols():
     L.append(_two_pin_named("Conn_JST2_tb", "J", "JST-PH-2", jst_body,
                              ("1", "1"), ("2", "2")))
 
+    # --- battery flying-lead pad pair (footprint pads already 1/2) ---
+    # Drawn as the two bare pads it physically is, not a connector body:
+    # nothing plugs into J2, two wires are soldered to it.
+    bat_body = (
+        '        (circle (center -1.27 0) (radius 0.635) (stroke (width 0.254) (type default)) (fill (type none)))\n'
+        '        (circle (center 1.27 0) (radius 0.635) (stroke (width 0.254) (type default)) (fill (type none)))\n'
+        '        (polyline (pts (xy -2.54 1.905) (xy -2.54 2.54) (xy -1.905 2.54)) (stroke (width 0.254) (type default)) (fill (type none)))\n'
+        '        (polyline (pts (xy 1.905 2.54) (xy 3.175 2.54)) (stroke (width 0.254) (type default)) (fill (type none)))\n'
+    )
+    L.append(_two_pin_named("Conn_BAT2_tb", "J", "BAT+ / BAT- flying leads",
+                             bat_body, ("BAT+", "1"), ("BAT-", "2")))
+
+    # --- generic R / C, for the aux parts (AUX_PARTS) ---
+    # Same bodies gm's own build_lib_symbols() draws for R_kbd/C_kbd; copied
+    # rather than imported for the same reason _power_symbols() is (they are
+    # nested inside gm's build_lib_symbols(), which this board can't call --
+    # it would drag in RP2040/RM2/USB-C symbols this board has none of).
+    r_body = ('        (rectangle (start -2.54 1.016) (end 2.54 -1.016) '
+              '(stroke (width 0.254) (type default)) (fill (type none)))\n')
+    L.append(_two_pin_named("R_kbd", "R", "R", r_body, ("1", "1"), ("2", "2")))
+    c_body = (
+        '        (polyline (pts (xy -0.508 1.905) (xy -0.508 -1.905)) (stroke (width 0.508) (type default)) (fill (type none)))\n'
+        '        (polyline (pts (xy 0.508 1.905) (xy 0.508 -1.905)) (stroke (width 0.508) (type default)) (fill (type none)))\n'
+    )
+    L.append(_two_pin_named("C_kbd", "C", "C", c_body, ("1", "1"), ("2", "2")))
+
     # --- level shifter: SN74AHCT1G125DBVR, SOT-23-5 single-gate buffer --
     # the same part the sibling keyboard project uses (generate_kbd_rp2040.py,
     # chosen explicitly over same-numbered parts from other vendors that
@@ -349,8 +451,17 @@ SCH_BLOCKS = [
     ("ROTARY ENCODER  EC11 / ENC1", 165.1, 149.86, 220.98, 179.07),
     ("LED CHAIN  (9x SK6812MINI-E, level-shifted from GPIO20)",
      15.24, 187.96, 292.1, 215.9),
-    ("POWER  (JST battery input)", 15.24, 226.06, 96.52, 250.19),
+    ("POWER  (JST battery input + BAT flying leads to the XIAO)",
+     15.24, 226.06, 96.52, 250.19),
+    ("PASSIVES  (LED/encoder/shifter decoupling, bulk, VBAT sense divider)",
+     104.14, 226.06, 292.1, 292.1),
 ]
+
+# Where the AUX_PARTS grid lands inside the PASSIVES block above. All
+# multiples of gm.GRID (1.27) -- gm.g() asserts on-grid and refuses anything
+# else.
+AUX_GRID_X0, AUX_GRID_DX, AUX_GRID_COLS = 114.3, 30.48, 6
+AUX_GRID_Y0, AUX_GRID_DY = 238.76, 20.32
 
 
 def build_sch():
@@ -507,6 +618,30 @@ def build_sch():
                               jx, jy, 0, ["1", "2"], _fp("JST_SH_SM02B_2pin_Back")))
     attach(net_on("J1", "1"), jx - 3.81, jy, "L")
     attach(net_on("J1", "2"), jx + 3.81, jy, "R")
+
+    texts.append(gm.sch_text(
+        "J2 (in PASSIVES) is the pad pair for the two flying leads soldered "
+        "to the XIAO module's UNDERSIDE BAT+/BAT- pads. The XIAO sits on "
+        "female headers and its battery terminals are on its bottom face, so "
+        "no PCB pad can mate with them; without J2 the VSYS rail J1 feeds "
+        "never reaches the module at all.",
+        17.78, 248.92, 1.6))
+
+    # ================================================ AUX PARTS ========
+    # Every two-pin part with no block of its own (AUX_PARTS): the per-LED
+    # and encoder/level-shifter decoupling caps, the bulk cap, the VBAT
+    # sense divider, and the battery flying-lead pads. Auto-placed from the
+    # registry rather than hand-written per part -- see AUX_PARTS' own
+    # comment for the 12-missing-parts bug that motivates this.
+    for idx, (ref, (sym, val, fpname, _side)) in enumerate(AUX_PARTS.items()):
+        px = AUX_GRID_X0 + (idx % AUX_GRID_COLS) * AUX_GRID_DX
+        py = AUX_GRID_Y0 + (idx // AUX_GRID_COLS) * AUX_GRID_DY
+        parts.append(gm.sym_inst(sym, ref, val, px, py, 0, ["1", "2"],
+                                  _fp(fpname)))
+        n1, n2 = net_on(ref, "1"), net_on(ref, "2")
+        assert n1 and n2, f"{ref} has an unwired pin -- check build_nets()"
+        attach(n1, px - 3.81, py, "L")
+        attach(n2, px + 3.81, py, "R")
 
     body = "\n".join(texts + frames + [p for p in parts if p] + wires + labels + ncs)
     root_uuid = gm.U("smk-test-board-root-sheet")
@@ -726,6 +861,62 @@ def _fp_ec11_vertical(ref, x, y, path_uuid, pinnet):
     return s + "\n".join(b) + "\n  )\n"
 
 
+# Flying-lead battery pads. 5.08mm pitch (not 2.54) so the two silk labels
+# "BAT+" / "BAT-" fit side by side at a legible 0.8mm without colliding.
+BAT_PAD_PITCH = 5.08
+
+
+def _fp_bat_pads(ref, x, y, path_uuid, pinnet):
+    """BAT_WIRE_PADS: a labelled 2-pin THROUGH-HOLE pad pair for two short
+    flying leads hand-soldered to the XIAO module's underside BAT+/BAT- pads.
+
+    Why this exists: the XIAO ESP32-C6's battery terminals are solder pads on
+    the BOTTOM of the module, and this board seats the module on female
+    headers, so no PCB pad can ever mate with them -- XIAO_ESP32C6_HEADERS is
+    14 pads with no BAT pad and that is correct. Without these two, VSYS (fed
+    by J1, the JST battery connector, and consumed by all nine SK6812 VDD
+    pins, C1-C9, C12, C_BULK and U2's VCC) never reaches the XIAO at all: the
+    board cannot run untethered, the XIAO's own charger is not in circuit
+    with the JST, and on USB with no cell fitted the whole LED chain and the
+    level shifter are dead.
+
+    THT, not SMD: these take hand-soldered wire, and an SMD pad tears off.
+
+    Polarity is made unambiguous four ways, because getting it backwards puts
+    a Li-ion cell into the XIAO reversed: pad 1 is the KiCad pin-1 square,
+    the two pads carry their own "BAT+"/"BAT-" silk labels, a drawn silk "+"
+    sits outboard of pad 1 and a drawn silk "-" outboard of pad 2, and the
+    fab-layer body rect is annotated in docs/bring-up.md as the VSYS probe
+    point. pinnet keys are footprint pad numbers (1 = BAT+ = VSYS, 2 = BAT- =
+    GND)."""
+    s = gm.fp_header(_fp("BAT_WIRE_PADS"), ref, "BAT+ / BAT- flying leads",
+                      x, y, 0, layer="F.Cu", attr="through_hole",
+                      ref_at=(0, -4.2), val_at=(0, 4.2), path_uuid=path_uuid)
+    h = BAT_PAD_PITCH / 2
+    b = []
+    b.append(gm.pad(1, "thru_hole", "rect", -h, 0, 1.7, 1.7,
+                    '"*.Cu" "*.Mask"', pinnet.get(1), drill=1.0))
+    b.append(gm.pad(2, "thru_hole", "circle", h, 0, 1.7, 1.7,
+                    '"*.Cu" "*.Mask"', pinnet.get(2), drill=1.0))
+    # 1.0mm, not the 0.8mm this first shipped at: 0.8 is below the project's
+    # own silk-text minimum (JLCPCB's floor) and DRC flags it as text_height.
+    b.append(_fptext("user", "BAT+", -h, -2.3, "F.SilkS", size=1.0))
+    b.append(_fptext("user", "BAT-", h, -2.3, "F.SilkS", size=1.0))
+    # Drawn "+" outboard of pad 1 and "-" outboard of pad 2 -- redundant with
+    # the text on purpose; a clipped or misread label must not be the only
+    # thing standing between a Li-ion cell and a reversed XIAO.
+    b.append(gm.fpline(-h - 2.6, 0, -h - 1.6, 0, "F.SilkS", 0.15))
+    b.append(gm.fpline(-h - 2.1, -0.5, -h - 2.1, 0.5, "F.SilkS", 0.15))
+    b.append(gm.fpline(h + 1.6, 0, h + 2.6, 0, "F.SilkS", 0.15))
+    b.append(gm.fprect(-3.4, -1.0, 3.4, 1.0, "F.Fab"))
+    b.append(gm.fprect(-5.4, -3.0, 5.4, 3.0, "F.CrtYd", 0.05))
+    return s + "\n".join(b) + "\n  )\n"
+
+
+# Half-extents of BAT_WIRE_PADS' F.CrtYd rectangle above, for _place().
+BAT_PADS_HALF = (5.4, 3.0)
+
+
 _SOCKET_CRTYD_RE = re.compile(
     r'\(fp_rect \(start ([-\d.]+) ([-\d.]+)\) \(end ([-\d.]+) ([-\d.]+)\) '
     r'\(stroke \(width [\d.]+\) \(type solid\)\) \(fill none\) \(layer "B.CrtYd"\)')
@@ -862,7 +1053,25 @@ def _best_clear_offset(obstacles, near_x, near_y, w, h, max_dist=6.0, step=0.2,
     return best_safe[:3] if best_safe is not None else best_overall
 
 
-def _cap_offsets_near(refs, obstacles, near_x, near_y, w=3.0, h=1.8, max_dist=6.0):
+def _placed_obstacles(exclude=()):
+    """Every already-placed footprint's real courtyard box as an obstacle, in
+    ABSOLUTE board coordinates -- straight out of gm.FPBOX, which _place()/
+    _place_box() have already filled with exactly the boxes check_overlaps()
+    scans. Same principle as _socket_back_courtyard()/_probe_obstacles(): read
+    the real geometry instead of hand-copying coordinates.
+
+    _pad_obstacles()/_probe_obstacles() answer "where are this ONE footprint's
+    pads, in its own local frame" -- the right question for a cap tucked under
+    its own switch. This answers "what is already on the board, in board
+    coordinates" -- the right question for a part like J2 or the VBAT divider,
+    which has no owning footprint to sit inside and must simply miss
+    everything placed so far."""
+    return [("rect", x, y, 2 * hx, 2 * hy)
+            for (ref, x, y, hx, hy) in gm.FPBOX if ref not in exclude]
+
+
+def _cap_offsets_near(refs, obstacles, near_x, near_y, w=3.0, h=1.8, max_dist=6.0,
+                      min_clear=0.3):
     """Local (x, y) for a run of RC_0603-sized caps near (near_x, near_y),
     each found by _best_clear_offset() against `obstacles` PLUS every
     offset already returned earlier in this same call -- so a second cap
@@ -877,7 +1086,9 @@ def _cap_offsets_near(refs, obstacles, near_x, near_y, w=3.0, h=1.8, max_dist=6.
     obs = list(obstacles)
     out = {}
     for ref in refs:
-        x, y, _clearance = _best_clear_offset(obs, near_x, near_y, w, h, max_dist=max_dist)
+        x, y, _clearance = _best_clear_offset(obs, near_x, near_y, w, h,
+                                              max_dist=max_dist,
+                                              min_clear=min_clear)
         out[ref] = (x, y)
         obs = obs + [("rect", x, y, w, h)]
     return out
@@ -1032,9 +1243,11 @@ def build_pcb():
                     0, 0, max_dist=9.0)
                 for debounce, (ddx, ddy) in debounce_xy.items():
                     dcx, dcy = kx + ddx, ky + ddy
-                    fps.append(gm.fp_0603(debounce, "100n", dcx, dcy, 0,
+                    _sym, _val, _fpn, _side = AUX_PARTS[debounce]
+                    fps.append(gm.fp_0603(debounce, _val, dcx, dcy, 0,
                                           gm.U("sym", debounce),
-                                          net_on(debounce, "1"), net_on(debounce, "2")))
+                                          net_on(debounce, "1"), net_on(debounce, "2"),
+                                          side=_side))
                     _place(debounce, "F", dcx, dcy, 1.5, 0.9)
                     POS_OF_REF[debounce] = (r, c)
             else:
@@ -1091,8 +1304,9 @@ def build_pcb():
                                        0, LED_OFFSET_Y)
             ccx, ccy = cap_xy[cap]
             cx, cy = kx + ccx, ky + ccy
-            fps.append(gm.fp_0603(cap, "100n", cx, cy, 0, gm.U("sym", cap),
-                                  net_on(cap, "1"), net_on(cap, "2"), side="B"))
+            _sym, _val, _fpn, _side = AUX_PARTS[cap]
+            fps.append(gm.fp_0603(cap, _val, cx, cy, 0, gm.U("sym", cap),
+                                  net_on(cap, "1"), net_on(cap, "2"), side=_side))
             _place(cap, "B", cx, cy, 1.5, 0.9)
             POS_OF_REF[cap] = (r, c)
 
@@ -1107,6 +1321,53 @@ def build_pcb():
                                 {i: net_on("U1", str(i)) for i in range(1, 15)}))
     _place("U1", "F", field_cx, xiao_y, 10.2, 10.5)
 
+    # ---- 2b. battery flying-lead pads (J2), beside U1 ----
+    # Position is SEARCHED against everything already on the board, the same
+    # way the decoupling caps are -- not picked by hand. The obstacle set
+    # here is _placed_obstacles() (real courtyards, absolute coordinates)
+    # rather than one footprint's local pads, because J2 has no owning
+    # footprint to sit inside; it just has to miss everything.
+    #
+    # min_clear=1.5 (not the caps' 0.3): a soldering iron has to reach these
+    # two pads with the XIAO MODULE SEATED on its headers. U1's courtyard
+    # (+-10.2 x +-10.5) already covers the module's 21 x 17.5mm body, so
+    # 1.5mm of clearance to that courtyard is 1.5mm of open board beyond the
+    # module's own outline -- enough for an iron tip and a wire, and the
+    # search will refuse to place J2 anywhere that doesn't have it.
+    #
+    # Seeded to U1's LEFT (-19.0mm) rather than its right: the right side at
+    # this y would push the board outline out past its current 76mm width,
+    # and the left side at y = xiao_y is empty board (the nearest neighbours
+    # are the key field's back courtyards, which stop at y~71, and H3 at the
+    # bottom-left corner).
+    bat_w, bat_h = BAT_PADS_HALF[0] * 2, BAT_PADS_HALF[1] * 2
+    j2x, j2y, j2_clear = _best_clear_offset(
+        _placed_obstacles(), field_cx - 19.0, xiao_y, bat_w, bat_h,
+        max_dist=6.0, min_clear=1.5)
+    assert j2_clear >= 1.5, (
+        f"J2 (battery flying-lead pads) could only reach {j2_clear:.2f}mm "
+        "clearance -- a soldering iron cannot reach it with the XIAO seated")
+    fps.append(_fp_bat_pads("J2", j2x, j2y, gm.U("sym", "J2"),
+                            {1: net_on("J2", "1"), 2: net_on("J2", "2")}))
+    _place("J2", "F", j2x, j2y, *BAT_PADS_HALF)
+
+    # ---- 2c. VBAT sense divider (R1/R2), beside U1's pad 1 ----
+    # VSYS -> R1 -> VBAT_SENSE -> R2 -> GND, midpoint on U1 pad 1 (D0 /
+    # GPIO0 / ADC1_CH0). Placed with the same obstacle-aware machinery as
+    # everything else, seeded near U1's own pad 1 (local -8.89, -7.62) so
+    # the sense trace is short; the search pushes them clear of U1's
+    # courtyard on its own, since that courtyard is in the obstacle set.
+    div_near_x = field_cx - 12.5
+    div_near_y = xiao_y - 7.62
+    div_xy = _cap_offsets_near(["R1", "R2"], _placed_obstacles(),
+                               div_near_x, div_near_y, max_dist=8.0)
+    for rref in ("R1", "R2"):
+        rx, ry = div_xy[rref]
+        _sym, _val, _fpn, _side = AUX_PARTS[rref]
+        fps.append(gm.fp_0603(rref, _val, rx, ry, 0, gm.U("sym", rref),
+                              net_on(rref, "1"), net_on(rref, "2"), side=_side))
+        _place(rref, _side, rx, ry, 1.5, 0.9)
+
     # ---- 3. level shifter, bulk cap, JST -- bottom edge ----
     bottom_y = xiao_y + 10.5 + 5 + 3.28
     fps.append(gm.fp_jst_sh("J1", field_x0, bottom_y, 0, gm.U("sym", "J1"),
@@ -1119,14 +1380,32 @@ def build_pcb():
                              gm.U("sym", "U2"), lvl_pinnet))
     _place("U2", "F", field_cx, bottom_y, 1.7, 2.0)
 
-    # Ref C_BULK, not C1 -- C1..C9 are now the per-LED decoupling caps
-    # (build_nets()) and C10/C11 the encoder debounce caps; this bulk cap
-    # has no build_nets() entry of its own (VSYS/GND are passed directly),
-    # so any non-colliding name works, but reusing "C1" here would shadow
-    # a real, netted ref.
-    fps.append(gm.fp_0603("C_BULK", "100u", field_x1, bottom_y, 0, gm.U("sym", "C_BULK"),
-                          "VSYS", "GND"))
-    _place("C_BULK", "F", field_x1, bottom_y, 1.5, 0.9)
+    # U2's local decoupling (C12). Controller review (final wave): the level
+    # shifter had no decoupling at all -- nearest cap was C_BULK, 19mm away
+    # at the far end of the bottom edge. Seeded at U2's own VCC pad (pad 5,
+    # local (-0.95, -1.3) per gm.fp_sot23_5) so the loop is short; the
+    # search then walks it out clear of U2's courtyard.
+    u2_vcc_x, u2_vcc_y = field_cx - 0.95, bottom_y - 1.3
+    dec_xy = _cap_offsets_near(["C12"], _placed_obstacles(),
+                               u2_vcc_x, u2_vcc_y - 2.5, max_dist=6.0)
+    c12x, c12y = dec_xy["C12"]
+    _sym, _val, _fpn, _side = AUX_PARTS["C12"]
+    fps.append(gm.fp_0603("C12", _val, c12x, c12y, 0, gm.U("sym", "C12"),
+                          net_on("C12", "1"), net_on("C12", "2"), side=_side))
+    _place("C12", _side, c12x, c12y, 1.5, 0.9)
+
+    # Ref C_BULK, not C1 -- C1..C12 are the per-LED / encoder-debounce /
+    # level-shifter decoupling caps, so a numbered ref here would shadow one.
+    # Its nets come from build_nets() like every other part's: passing
+    # "VSYS"/"GND" straight to fp_0603() (as this did) kept it out of the
+    # netlist build_sch() renders from, which is exactly why it was one of
+    # the 12 parts missing from the schematic.
+    _sym, _val, _fpn, _side = AUX_PARTS["C_BULK"]
+    fps.append(gm.fp_0603("C_BULK", _val, field_x1, bottom_y, 0,
+                          gm.U("sym", "C_BULK"),
+                          net_on("C_BULK", "1"), net_on("C_BULK", "2"),
+                          side=_side))
+    _place("C_BULK", _side, field_x1, bottom_y, 1.5, 0.9)
 
     # ---- 4. board outline + BOARD_W/BOARD_H ----
     # Derived from the extents of everything placed so far (mounting holes
