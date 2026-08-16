@@ -20,6 +20,7 @@ EXPECTED = {
     "JST_SH_SM02B_2pin_Back": 2,
     "XIAO_ESP32C6_HEADERS": 14,   # 2 x 1x7, 2.54mm pitch
     "EC11_VERTICAL": 5,   # A, C, B + 2 switch terminals
+    "SOT-23-5": 5,   # level shifter (SN74AHCT1G125DBVR): OE#, A, GND, Y, VCC
 }
 
 

@@ -68,12 +68,19 @@ def key_xy(r, c):
 # for switches, "VDD"/"GND"/"DIN"/"DOUT" for the LEDs. build_sch() translates
 # through PAD_MAP on the way out. Most refs (XIAO pads, the Gateron switches,
 # the EC11, the JST connector) already use numeric footprint pad numbers
-# directly as their logical name, so PAD_MAP only needs entries for the two
+# directly as their logical name, so PAD_MAP only needs entries for the
 # footprints where that isn't true.
 PAD_MAP = {
     # logical name -> footprint pad number, per the proven footprints
     "SK6812MINI_E": {"VDD": "1", "DOUT": "2", "GND": "3", "DIN": "4"},
-    "D_SOD-123_Back": {"A": "1", "K": "2"},
+    # D_SOD-123_Back: pad 1 = K, pad 2 = A. Settled from the sibling's own
+    # fp_diode(ref, x, y, rot, n_k, n_a, ...) -- cathode net is its FIRST
+    # net parameter, wired to pad 1. (generate_macropad.py:1485 records
+    # this exact class of bug having shipped there once already.)
+    "D_SOD-123_Back": {"K": "1", "A": "2"},
+    # SOT-23-5: SN74AHCT1G125DBVR pinout (datasheet SCLS504E) --
+    # 1 OE#(active-low) 2 A(in) 3 GND 4 Y(out) 5 VCC
+    "SOT-23-5": {"OE#": "1", "A": "2", "GND": "3", "Y": "4", "VCC": "5"},
 }
 
 
@@ -111,10 +118,17 @@ def build_nets():
             add(f"SW{r}{c}_N", sw, "2")           # switch -> diode anode
             add(f"SW{r}{c}_N", d, "A")
 
-    # LED chain: level shifter drives RGB1, then each DOUT feeds the next DIN.
+    # LED chain: level shifter (SN74AHCT1G125DBVR, SOT-23-5, single-gate
+    # buffer -- same part the sibling keyboard project uses) drives RGB1,
+    # then each DOUT feeds the next DIN. OE# tied to GND permanently
+    # enables it; VCC from VSYS (not +3V3) so AHCT's 2.0V input threshold
+    # keeps margin against the C6's 3.3V drive across VSYS's whole range.
     add("LEDD0", "U1", "10")                      # GPIO20 -> shifter in
-    add("LEDD0", "U2", "IN")
-    add("LEDD1", "U2", "OUT")
+    add("LEDD0", "U2", "A")                        # shifter input
+    add("GND", "U2", "OE#")                        # permanently enabled
+    add("GND", "U2", "GND")
+    add("LEDD1", "U2", "Y")                         # shifter output -> RGB1 DIN
+    add("VSYS", "U2", "VCC")
     for i in range(1, LED_COUNT + 1):
         add(f"LEDD{i}", f"RGB{i}", "DIN")
         if i < LED_COUNT:
@@ -133,7 +147,10 @@ def build_nets():
 
     add("VSYS", "J1", "1")
     add("GND", "J1", "2")
-    add("+3V3", "U1", "12")
+    # U1 pad 12 (+3V3, the XIAO's own regulated logic rail) is left
+    # unwired: nothing on this board consumes regulated 3.3V -- the LEDs
+    # are deliberately on VSYS (see above) and the level shifter is now a
+    # single VSYS-rail part, so there is no +3V3 net at all.
     add("GND", "U1", "13")
     return nets
 
@@ -227,13 +244,13 @@ def _power_symbols():
 def build_lib_symbols():
     L = []
 
-    # --- diode (pin "1"=A, pin "2"=K, per PAD_MAP) ---
+    # --- diode (pin "1"=K, pin "2"=A, per PAD_MAP) ---
     diode_body = (
-        '        (polyline (pts (xy 1.27 1.27) (xy 1.27 -1.27)) (stroke (width 0.254) (type default)) (fill (type none)))\n'
-        '        (polyline (pts (xy -1.27 1.27) (xy -1.27 -1.27) (xy 1.27 0) (xy -1.27 1.27)) (stroke (width 0.254) (type default)) (fill (type outline)))\n'
+        '        (polyline (pts (xy -1.27 1.27) (xy -1.27 -1.27)) (stroke (width 0.254) (type default)) (fill (type none)))\n'
+        '        (polyline (pts (xy 1.27 1.27) (xy 1.27 -1.27) (xy -1.27 0) (xy 1.27 1.27)) (stroke (width 0.254) (type default)) (fill (type outline)))\n'
     )
     L.append(_two_pin_named("D_kbd", "D", "1N4148W", diode_body,
-                             ("A", "1"), ("K", "2")))
+                             ("K", "1"), ("A", "2")))
 
     # --- Gateron hot-swap switch (no polarity; footprint pads already 1/2) ---
     sw_body = (
@@ -249,15 +266,18 @@ def build_lib_symbols():
     L.append(_two_pin_named("Conn_JST2_tb", "J", "JST-PH-2", jst_body,
                              ("1", "1"), ("2", "2")))
 
-    # --- level shifter: schematic-only 2-terminal placeholder. build_nets()
-    # only defines IN/OUT (no VCC/GND/OE#), so those real pins on whatever
-    # part gets chosen (SN74AHCT1G125DBVR SOT-23-5 is the sibling keyboard
-    # project's precedent, see generate_kbd_rp2040.py) are deliberately not
-    # modeled here rather than left dangling/unwired in the schematic.
-    lvl_body = '        (rectangle (start -3.81 2.54) (end 3.81 -2.54) (stroke (width 0.254) (type default)) (fill (type none)))\n'
-    L.append(_two_pin_named("LVL_SHIFT_tb", "U",
-                             "LEVEL SHIFTER (VCC/GND/OE# not modeled -- see note)",
-                             lvl_body, ("IN", "IN"), ("OUT", "OUT"), pin_x=3.81))
+    # --- level shifter: SN74AHCT1G125DBVR, SOT-23-5 single-gate buffer --
+    # the same part the sibling keyboard project uses (generate_kbd_rp2040.py,
+    # chosen explicitly over same-numbered parts from other vendors that
+    # don't come in SOT-23-5). 1 OE#(active-low) 2 A(in) 3 GND 4 Y(out) 5 VCC.
+    lvl_pins = [
+        ("input", -10.16, 2.54, 0, "OE#", "1"),
+        ("input", -10.16, 0, 0, "A", "2"),
+        ("power_in", -10.16, -2.54, 0, "GND", "3"),
+        ("output", 10.16, 0, 180, "Y", "4"),
+        ("power_in", 10.16, 2.54, 180, "VCC", "5"),
+    ]
+    L.append(_boxsym("LVL_SHIFT_tb", "U", "SN74AHCT1G125DBVR", 15.24, lvl_pins))
 
     # --- XIAO ESP32-C6, 14-pin header, pads matching XIAO_ESP32C6_HEADERS ---
     xiao_pins = [
@@ -378,6 +398,11 @@ def build_sch():
             yo = my0 + r * row_dy
             d = f"D{r}{c}"
             d_footprint = "D_SOD-123_Back"
+            # D_kbd's pin "1" (K) and pin "2" (A) are authored at local
+            # x=-3.81/+3.81 respectively; placing the instance at rot=180
+            # swaps that to abs_x=dx+3.81/dx-3.81 -- i.e. A lands on the
+            # LEFT (facing the switch/COL side) and K on the RIGHT (facing
+            # ROW), which is the direction this matrix needs.
             if (r, c) == (0, 2):
                 # No SW02: the diode's anode is fed straight from SW02_N
                 # (the EC11 push switch, wired in the encoder block).
@@ -385,7 +410,7 @@ def build_sch():
                 attach(net_on(d, "A"), dx - 3.81, yo, "L")
                 a_pad = real_pad(d_footprint, "A")
                 k_pad = real_pad(d_footprint, "K")
-                parts.append(gm.sym_inst("D_kbd", d, "1N4148W", dx, yo, 0,
+                parts.append(gm.sym_inst("D_kbd", d, "1N4148W", dx, yo, 180,
                                           [a_pad, k_pad], _fp(d_footprint)))
                 attach(net_on(d, "K"), dx + 3.81, yo, "R")
                 continue
@@ -401,7 +426,7 @@ def build_sch():
             wires.append(gm.sch_wire(sx + 3.81, yo, dx - 3.81, yo))
             a_pad = real_pad(d_footprint, "A")
             k_pad = real_pad(d_footprint, "K")
-            parts.append(gm.sym_inst("D_kbd", d, "1N4148W", dx, yo, 0,
+            parts.append(gm.sym_inst("D_kbd", d, "1N4148W", dx, yo, 180,
                                       [a_pad, k_pad], _fp(d_footprint)))
             attach(net_on(d, "K"), dx + 3.81, yo, "R")
 
@@ -418,11 +443,15 @@ def build_sch():
     # ================================================ LED CHAIN ========
     ly0 = 195.58
     lx0 = 40.64
-    parts.append(gm.sym_inst("LVL_SHIFT_tb", "U2",
-                              "LEVEL SHIFTER (part TBD; VCC/GND/OE# not modeled)",
-                              lx0, ly0, 0, ["IN", "OUT"], ""))
-    attach(net_on("U2", "IN"), lx0 - 3.81, ly0, "L")
-    attach(net_on("U2", "OUT"), lx0 + 3.81, ly0, "R")
+    lvl_footprint = "SOT-23-5"
+    lvl_pin_nums = [real_pad(lvl_footprint, k) for k in ("OE#", "A", "GND", "Y", "VCC")]
+    parts.append(gm.sym_inst("LVL_SHIFT_tb", "U2", "SN74AHCT1G125DBVR",
+                              lx0, ly0, 0, lvl_pin_nums, _fp(lvl_footprint)))
+    attach(net_on("U2", "OE#"), lx0 - 10.16, ly0 - 2.54, "L")
+    attach(net_on("U2", "A"), lx0 - 10.16, ly0, "L")
+    attach(net_on("U2", "GND"), lx0 - 10.16, ly0 + 2.54, "L")
+    attach(net_on("U2", "Y"), lx0 + 10.16, ly0, "R")
+    attach(net_on("U2", "VCC"), lx0 + 10.16, ly0 - 2.54, "R")
 
     led_footprint = "SK6812MINI_E"
     rx0 = lx0 + 25.4

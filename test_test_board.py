@@ -78,3 +78,15 @@ def test_leds_are_on_vsys_not_3v3():
     for i in range(1, tb.LED_COUNT + 1):
         assert (f"RGB{i}", "VDD") in nets["VSYS"], f"RGB{i} not on VSYS"
         assert (f"RGB{i}", "VDD") not in nets.get("+3V3", []), f"RGB{i} on +3V3"
+
+
+def test_no_net_has_fewer_than_two_members():
+    """A one-member net is a floating pin -- the general form of the +3V3
+    bug a controller review caught here: build_nets() used to add U1 pad 12
+    to a "+3V3" net with nothing else ever on it. The fix was to stop
+    creating that net at all (nothing on this board consumes regulated
+    3.3V), not to pad it out with an invented consumer. This test is the
+    guard against that class of bug recurring, for +3V3 or any other net."""
+    nets = tb.build_nets()
+    floating = {net: members for net, members in nets.items() if len(members) < 2}
+    assert not floating, f"floating (single-member) nets: {floating}"
