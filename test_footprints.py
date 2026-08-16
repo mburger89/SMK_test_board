@@ -16,7 +16,7 @@ EXPECTED = {
     "SK6812MINI_E": 4,         # VDD, GND, DIN, DOUT
     "D_SOD-123_Back": 2,
     "RC_0603": 2,
-    "MountingHole_M2": 0,
+    "MountingHole_M2": 1,
     "JST_SH_SM02B_2pin_Back": 2,
 }
 
