@@ -385,6 +385,13 @@ and animates" in the design spec's §9 means this — press a key, its LED
 lights; release it, the LED goes dark. There is no boot-time rainbow or
 idle pattern to wait for.
 
+**Expected: RGB3 (row 0 / col 2, under the encoder) will look dimmer than
+the other eight.** The EC11's 12 × 12 mm body covers roughly the southern
+half of RGB3's light window (~49% of it) — reviewed and accepted at design
+time, not a defect. Do not log this as a fault; log it only if RGB3 doesn't
+light at all, or is dim enough to suggest something else is wrong (see
+`docs/fabrication.md`'s DRC triage for the underlying geometry).
+
 - [ ] **9a. Press each of the 9 keys in turn and watch its LED.** Expect:
   LED lights solid white while held, goes dark on release, and it's the
   **correct** LED under the key you pressed (the chain is wired
