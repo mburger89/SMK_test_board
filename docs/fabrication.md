@@ -46,7 +46,7 @@ recorded here as a hard gate for whoever places the order.
 | Surface finish | HASL (lead-free) |
 | Soldermask / silkscreen | JLCPCB defaults (green / white) — cosmetic only, not specified by the design |
 | Min hole / min trace-space | 21 plated holes (all 1.0 mm) and 30 unplated (2.4/3.0/3.2/5.2 mm — the largest is the Gateron hot-swap socket's own centre hole, one per socket). Matrix/LED/passive pads are standard sizes from the proven sibling footprint library. |
-| Milled internal cutouts | **9 SK6812MINI-E light windows**, ~3.4 × 3.0 mm rounded rectangles, one per LED, on `Edge.Cuts`. They are not optional decoration: these are reverse-mount LEDs on the back that shine *through* the board. Tightest copper-to-cut on the board is here — see the DRC triage below and checklist item 5. |
+| Milled internal cutouts | **9 SK6812MINI-E light windows**, ~3.63 × 3.23 mm rounded rectangles (the real milled opening — the arcs' control-point bounding box, ~3.49 × 3.09 mm, understates it by ~0.15 mm per axis), one per LED, on `Edge.Cuts`. They are not optional decoration: these are reverse-mount LEDs on the back that shine *through* the board. Tightest copper-to-cut on the board is here — see the DRC triage below and checklist item 5. |
 
 **Why bare boards, no PCBA:** at 9 switches, 9 LEDs, 9 diodes, one MCU
 module, one encoder, and a handful of passives, JLCPCB's per-unique-part

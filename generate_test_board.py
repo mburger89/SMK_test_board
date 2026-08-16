@@ -707,11 +707,14 @@ def build_sch():
 # local coordinates and lands correctly rotated at all nine placed positions
 # -- exactly how the proven sibling board
 # ~/esp/SMK_Keyboard/smk_kbd_rp2040/smk_kbd_rp2040.kicad_pcb stores its own
-# 58 SK6812MINI_E instances (verified: identical local numbers, footprint
+# 59 SK6812MINI_E instances (verified: identical local numbers, footprint
 # (at ... 180)).
 
 # ---- SK6812MINI-E light window (Edge.Cuts) -------------------------------
-# The ~3.4 x 3.0mm rounded-rect cutout milled through the board so this
+# The ~3.63 x 3.23mm rounded-rect cutout (the real milled opening -- the
+# arcs bulge ~0.07mm past their own endpoints, so the endpoints' bounding
+# box alone, ~3.49 x 3.09mm, understates it) milled through the board so
+# this
 # REVERSE-MOUNT LED, soldered to the back, shines through into the switch's
 # north window. Transcribed from smk_test_board.pretty/SK6812MINI_E.kicad_mod
 # (8 fp_line + 12 fp_arc), not re-derived: these are the exact numbers the

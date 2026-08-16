@@ -5,6 +5,7 @@ A footprint that silently loses pads (a bad copy, a truncated file) produces
 a board that fabricates fine and cannot be assembled, so this asserts pad
 counts rather than mere existence.
 """
+import math
 import os
 import re
 
@@ -286,15 +287,64 @@ def test_inline_rerenders_match_their_library_master():
                 f"element(s) the library master lacks: {sorted(extra)[:3]}")
 
 
+def _circle_from_3pts(p1, p2, p3):
+    """Centre and radius of the circle through three points."""
+    ax, ay = p1
+    bx, by = p2
+    cx, cy = p3
+    d = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    ux = ((ax**2 + ay**2) * (by - cy) + (bx**2 + by**2) * (cy - ay)
+          + (cx**2 + cy**2) * (ay - by)) / d
+    uy = ((ax**2 + ay**2) * (cx - bx) + (bx**2 + by**2) * (ax - cx)
+          + (cx**2 + cy**2) * (bx - ax)) / d
+    r = math.hypot(ax - ux, ay - uy)
+    return (ux, uy), r
+
+
+def _arc_bbox(start, mid, end):
+    """True (xlo, xhi, ylo, yhi) of a KiCad (start, mid, end) arc.
+
+    An endpoints-only bounding box UNDERSTATES an arc's extent whenever it
+    bulges past its own chord -- exactly what these corner arcs do (~0.07mm
+    each) -- so this walks the actual swept angle and includes any cardinal
+    point (0/90/180/270 degrees) the arc passes through, not just its two
+    endpoints.
+    """
+    (cx, cy), r = _circle_from_3pts(start, mid, end)
+
+    def ang(p):
+        return math.atan2(p[1] - cy, p[0] - cx) % (2 * math.pi)
+
+    def sweep(a0, a1):
+        return (a1 - a0) % (2 * math.pi)
+
+    a_s, a_m, a_e = ang(start), ang(mid), ang(end)
+    start_a, end_a = (a_s, a_e) if sweep(a_s, a_m) <= sweep(a_s, a_e) else (a_e, a_s)
+    span = sweep(start_a, end_a)
+    xs = [start[0], end[0]]
+    ys = [start[1], end[1]]
+    for cardinal in (0, math.pi / 2, math.pi, 3 * math.pi / 2):
+        if sweep(start_a, cardinal) <= span:
+            xs.append(cx + r * math.cos(cardinal))
+            ys.append(cy + r * math.sin(cardinal))
+    return min(xs), max(xs), min(ys), max(ys)
+
+
 def test_sk6812_carries_its_edge_cuts_light_window():
     """The specific defect, asserted by name as well as by class parity.
 
     SK6812MINI-E is REVERSE-MOUNT: it sits on the back of the board and
     shines forward THROUGH it, into each switch's north window. The window is
     milled, i.e. it exists only as Edge.Cuts geometry inside the footprint —
-    8 straight segments and 12 arcs forming a ~3.4 x 3.0mm rounded rect. With
-    no Edge.Cuts the LEDs are behind solid FR4 and do nothing, and it is not
-    reworkable after fabrication.
+    8 straight segments and 12 arcs. With no Edge.Cuts the LEDs are behind
+    solid FR4 and do nothing, and it is not reworkable after fabrication.
+
+    The real milled opening is ~3.634 x 3.234mm, not ~3.488 x 3.088mm: that
+    smaller figure (asserted below too, as a regression lock) is only the
+    bounding box of the arcs' CONTROL POINTS -- the twelve corner arcs bulge
+    ~0.07mm past their own start/end points, so a dimension a keycap or
+    light pipe gets designed against must come from the true swept geometry,
+    not the control points.
     """
     import generate_test_board as tb
     edge = _elements(tb._fp_sk6812mini_tb("REF**", 0, 0, None, {})).get("Edge.Cuts", set())
@@ -302,10 +352,34 @@ def test_sk6812_carries_its_edge_cuts_light_window():
     arcs = [e for e in edge if e[0] == "arc"]
     assert len(segs) == 8, f"{len(segs)} Edge.Cuts segments, want 8"
     assert len(arcs) == 12, f"{len(arcs)} Edge.Cuts arcs, want 12"
+
+    # Control-point bounding box -- a regression lock on the raw numbers,
+    # NOT the true opening (see docstring).
     xs = [c[0] for e in edge for c in e[2:] if c]
     ys = [c[1] for e in edge for c in e[2:] if c]
-    assert abs((max(xs) - min(xs)) - 3.48786) < 0.01, "window width wrong"
-    assert abs((max(ys) - min(ys)) - 3.08786) < 0.01, "window height wrong"
+    assert abs((max(xs) - min(xs)) - 3.48786) < 0.01, "control-point window width wrong"
+    assert abs((max(ys) - min(ys)) - 3.08786) < 0.01, "control-point window height wrong"
+
+    # True milled opening, including arc bulge -- what actually gets cut.
+    xlos, xhis, ylos, yhis = [], [], [], []
+    for e in edge:
+        if e[0] == "seg":
+            _w, a, b = e[1], e[2], e[3]
+            xlos += [a[0], b[0]]
+            xhis += [a[0], b[0]]
+            ylos += [a[1], b[1]]
+            yhis += [a[1], b[1]]
+        else:
+            _w, start, mid, end = e[1], e[2], e[3], e[4]
+            xlo, xhi, ylo, yhi = _arc_bbox(start, mid, end)
+            xlos.append(xlo)
+            xhis.append(xhi)
+            ylos.append(ylo)
+            yhis.append(yhi)
+    true_w = max(xhis) - min(xlos)
+    true_h = max(yhis) - min(ylos)
+    assert abs(true_w - 3.6343) < 0.005, f"true window width {true_w:.4f}mm, want ~3.634mm"
+    assert abs(true_h - 3.2343) < 0.005, f"true window height {true_h:.4f}mm, want ~3.234mm"
 
 
 def test_every_led_on_the_board_gets_a_window():
