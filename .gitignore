@@ -9,3 +9,7 @@ fp-info-cache
 # Fabrication output
 gerbers/
 *.zip
+
+# Python
+__pycache__/
+venv/

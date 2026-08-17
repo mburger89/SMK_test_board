@@ -1,0 +1,539 @@
+# Bring-up — SMK Test Board (rev A)
+
+Procedure for turning a freshly fabricated/assembled board into a validated
+one. Transcribed from the design spec's §9 acceptance checks
+(`docs/superpowers/specs/2026-08-16-smk-test-board-design.md`) into an
+ordered, checkable form.
+
+**Do these in order.** Power and continuity come before the XIAO module is
+ever seated, and matrix/layer checks come before anything wireless — each
+step assumes every step above it already passed. If a step fails, stop and
+fix it before continuing; a later step's result is not trustworthy if an
+earlier one didn't actually pass.
+
+Board reference: `docs/superpowers/specs/2026-08-16-smk-test-board-design.md`.
+Fabrication reference: `docs/fabrication.md`. Firmware: `~/esp/SMK`
+branch `test-board-config` (commit 171f67c). Configurator: `~/esp/smk_configurator`
+branch `test-board-design` (commit dfd84da). Reference keymap: `keymap.json`
+in this repo.
+
+Every checkbox below has a blank **Result** line. This document was written
+without hardware in hand — nothing in it has been run. Fill in each result
+as you go; don't check a box you haven't actually observed.
+
+---
+
+## Before you start: the footprint gate
+
+Two footprints on this board — `XIAO_ESP32C6_HEADERS` and `EC11_VERTICAL` —
+were hand-drawn from datasheet dimensions and had never been checked against
+physical parts as of fabrication (`docs/fabrication.md`'s "STOP — pre-order
+gate"). If that 1:1 print check happened before this board was ordered, its
+result belongs there, not here. If it didn't, or you're not sure, **Step 1
+below is your first chance to catch a footprint error** — a header row that
+doesn't seat, or encoder pins that don't line up with the PCB's holes both
+show up as soon as you hold the real parts against the board.
+
+---
+
+## Step 1 — Visual inspection and continuity
+
+Before the XIAO is seated. Power checks come first because a short here can
+damage the XIAO the moment it's powered, and there is no way to undo that.
+
+- [ ] **1a. Visual inspection.** No solder bridges, no lifted pads, no
+  obviously cold joints. Check `XIAO_ESP32C6_HEADERS` and `EC11_VERTICAL`
+  specifically — headers seat flush and square, encoder pins line up with
+  their holes and the mounting posts aren't binding against the footprint's
+  silkscreen/pads. (See "Before you start" above — this is where a
+  never-checked footprint shows up.)
+
+  Result: ______________________________________________
+
+- [ ] **1b. VSYS–GND continuity.** Multimeter in continuity/low-resistance
+  mode, board unpowered, XIAO **not yet seated**. Probe VSYS to GND at
+  `J1` (the JST SH battery connector) or at **`J2`, the two through-hole
+  pads silkscreened `BAT+` / `BAT-` beside `U1`** — `J2` pin 1 (`BAT+`,
+  the square pad) is VSYS, pin 2 (`BAT-`) is GND. Do not look for a VSYS
+  pad on the XIAO footprint: there isn't one and there can't be, because
+  the module's battery terminals are on its underside (see Step 1b-ii).
+  Expect **no continuity** (open, or a normal high-impedance reading — not
+  a dead short).
+
+  Note the reading will not be a true open: `R1`/`R2`, the VBAT sense
+  divider, sit across VSYS→GND, so expect roughly **400 kΩ**. A dead short
+  or a few ohms is the failure this step is looking for.
+
+  Result: ______________________________________________
+
+- [ ] **1b-ii. Solder the two battery flying leads.** With the XIAO
+  **out** of its headers, solder two short insulated wires to `J2`:
+  `BAT+` (square pad) and `BAT-`. Leave them long enough to reach the
+  module's underside pads with it seated, and **do not connect a cell
+  yet.**
+
+  Then seat the XIAO and solder the free ends to its **underside**
+  `BAT+` / `BAT-` solder pads. Getting these two backwards puts a Li-ion
+  cell into the XIAO reversed — check the silk twice: the square pad and
+  the drawn `+` are `BAT+` / VSYS; the round pad and the drawn `-` are
+  `BAT-` / GND.
+
+  This is the only path from the JST connector to the module. Without it
+  the board runs on USB only, the onboard charger never sees the cell, and
+  the LED chain and level shifter are unpowered whenever no cell is
+  fitted.
+
+  Result: ______________________________________________
+
+- [ ] **1c. 3V3–GND continuity.** Same method as 1b. Probe the XIAO
+  footprint's **3V3 pad (`U1` pin 12)** against a GND pad (`U1` pin 13, or
+  any other GND point, e.g. `J1` pin 2). Note this rail isn't carried
+  anywhere else on this board — `build_nets()` deliberately leaves U1 pin
+  12 unwired, since nothing here consumes regulated 3.3V (the LEDs run
+  from VSYS, and the level shifter is single-rail) — so this check is
+  really validating there's no solder bridge on the XIAO header footprint
+  itself between that pin and its GND neighbor, not a populated PCB net.
+  Expect **no continuity**.
+
+  Result: ______________________________________________
+
+  If either 1b or 1c shows a dead short: stop. Do not seat the XIAO or
+  apply power. Re-inspect for a solder bridge on the power rails before
+  going any further.
+
+---
+
+## Step 2 — Seat the XIAO and power up
+
+- [ ] **2a. Seat the XIAO ESP32-C6** module into its headers.
+
+  Result: ______________________________________________
+
+- [ ] **2b. Power over USB-C and confirm enumeration.** This board's
+  firmware build has no USB HID path on ESP32-C6 (BLE + wired-UART only,
+  per `~/esp/SMK/CLAUDE.md`'s target table — this board has no CH9350
+  bridge either) — what you're confirming here is the XIAO's native
+  USB-Serial/JTAG showing up as a new serial device, e.g.
+  `ls /dev/tty.usbmodem*` (macOS), so `idf.py flash` has something to talk
+  to. A device that doesn't enumerate at all points at the XIAO seating, a
+  bad USB-C cable/port, or a dead module — not yet a board wiring problem.
+
+  Result: ______________________________________________
+
+---
+
+## Step 3 — Flash the test board build
+
+- [ ] **3a. Select the board variant in Kconfig before building.**
+  `~/esp/SMK`'s `main/Kconfig.projbuild` defines a `choice SMK_BOARD` whose
+  **default is `SMK_BOARD_SMK_KBD`** — the *other* board, the 5×12
+  reference keyboard, not this one. If you skip this, the firmware
+  compiles and flashes cleanly and every matrix test below fails
+  confusingly, because it's scanning a pin map for a keyboard this board
+  isn't.
+
+  ```bash
+  . ~/.espressif/v6.0.1/esp-idf/export.sh
+  cd ~/esp/SMK
+  idf.py set-target esp32c6    # one-time, if not already set
+  idf.py menuconfig
+  ```
+
+  In the menu: **SMK Keyboard Configuration → Board variant**, select
+  **"SMK test board (Seeed XIAO ESP32-C6, 3x3 macropad bring-up board)"**
+  (`CONFIG_SMK_BOARD_TEST_BOARD`). Save and exit.
+
+  Result: ______________________________________________
+
+- [ ] **3b. Check whether this build actually supports two bonded hosts —
+  Step 11 depends on it, and it is not this branch's job to fix.**
+  `test-board-config`'s `sdkconfig.defaults` carries
+  `CONFIG_BT_NIMBLE_MAX_BONDS=1`. The `=4` that Step 11 (two-Mac bonding)
+  needs lives on the separate, unmerged `ble-custom-gatt` branch
+  (`git show ble-custom-gatt:sdkconfig.defaults`) — this is not a defect on
+  `test-board-config` to patch here, it resolves whenever that branch
+  merges (or you build from it directly). **Do not set this via
+  `idf.py menuconfig`** — that write lands only in the gitignored,
+  machine-local `sdkconfig` and silently reverts on the next clean
+  checkout, which is exactly how someone ends up chasing a "bonding
+  failure" that isn't a hardware problem at all.
+
+  Instead, check what you actually built, after `idf.py build` has
+  generated a real `sdkconfig`:
+
+  ```bash
+  grep CONFIG_BT_NIMBLE_MAX_BONDS ~/esp/SMK/sdkconfig
+  ```
+
+  If it reads `=1`, Step 11 is expected to fail — pairing a second Mac
+  will evict the first from the (single-slot) bond store rather than both
+  coexisting, which is a build-configuration gap, not a board defect. Note
+  which branch/commit you actually built from here so Step 11's result is
+  interpretable.
+
+  Result: ______________________________________________
+
+- [ ] **3c. Build and flash.**
+
+  ```bash
+  idf.py build
+  idf.py flash monitor
+  ```
+
+  Confirm the flash completes without error and the monitor shows the
+  firmware booting (no boot-loop, no crash backtrace).
+
+  Result: ______________________________________________
+
+---
+
+## Step 4 — Matrix
+
+The compiled-in default keymap for this board (`Sources/smk/Main.swift`,
+`#elseif SMK_BOARD_TEST_BOARD` branch) is a single flat layer,
+`key:1`…`key:9`, one keycode per matrix position, row-major — nothing
+uploaded yet. Use it as-is for this step; don't load anything in the
+configurator until Step 5.
+
+- [ ] **4a. All 9 positions register.** Press each of the 9 physical
+  positions in turn (the 8 Gateron switches plus the encoder's integrated
+  push-switch) and confirm each one reports a distinct keystroke 1–9 with
+  nothing missing and nothing duplicated. **The encoder's contribution here
+  is its push-switch only — press straight down on the knob.** Nothing in
+  this firmware build decodes rotation (GPIO17/GPIO19 are wired but
+  unread — quadrature decoding is a later spec, out of scope for this
+  board's bring-up); turning the knob left or right is expected to do
+  **nothing**, and that is not a failure.
+
+  Physically, the encoder's push-switch is wired at matrix **row 0 / col
+  2** — confirmed independently in three places: `generate_test_board.py`'s
+  `build_nets()` (`ENC1` pad 4 → `COL2`, pad 5 → the diode side of
+  `D02`, whose cathode is on `ROW0`), the design spec's §1/§2, and
+  `Main.swift`'s own comment on this board's default keymap ("row 0, col 2
+  is the rotary encoder's push switch"). If you're cross-referencing
+  against the schematic, that's the position to press for "encoder"; the
+  other 8 are ordinary Gateron switches.
+
+  Result (list each of the 9 positions and what it typed):
+  ______________________________________________
+  ______________________________________________
+
+- [ ] **4b. No ghosting on a three-key L.** Hold down three keys forming an
+  L-shape in the 3×3 grid (e.g. two keys in one row plus one key in a
+  different row, sharing a column with one of the first two) and confirm
+  exactly those three keystrokes register — no phantom fourth key from the
+  diode matrix.
+
+  Result: ______________________________________________
+
+---
+
+## Step 5 — Layers (`mo:` and `tg:`)
+
+The compiled-in default keymap from Step 4 has no layers at all — one flat
+9-key layer, no `mo:`/`tg:` tokens anywhere — so this step can't be
+exercised without uploading a keymap that has them first. That upload is
+what the rest of this step walks through.
+
+`keymap.json` puts `mo:1` on the encoder's push-switch itself — grid
+position **row 0 / col 2**, the same position Step 4a confirmed is the
+encoder — so holding the encoder press is expected to change layers, and
+the other 8 (ordinary Gateron) keys should show layer 1's values while it's
+held. Layer 1 mirrors layer 0's grid with `f1`–`f8` in place of `1`–`8`,
+and keeps `trans` at row 0 / col 2 so the encoder key falls through to its
+own `mo:1` rather than shadowing it. **Rotation still does nothing** —
+nothing in this firmware build reads GPIO17/GPIO19 (see Step 4a) — so
+turning the knob while testing this is not a failure, only pressing it is
+relevant here.
+
+`keymap.json` has no `tg:` binding at all (design spec §9 check 2 wants
+both `mo:` and `tg:` verified). Add one as part of the same upload, on an
+ordinary key well away from the encoder — and on **both** layers, the same
+way `mo:1`/`trans` are paired at row 0 / col 2: a `tg:` binding with no
+matching `trans` underneath it on the layer it switches to has no way
+back. `LayerEngine.getAction` only falls through to a lower layer when a
+cell is literally `trans` — once layer 1 is active, pressing that same key
+again resolves to whatever layer 1's own cell says, not layer 0's `tg:1`,
+so if layer 1's cell is still an ordinary keycode, the second press just
+types that keycode and the board is stuck on layer 1 with no way back
+except a fresh upload.
+
+- [ ] **5a. Load and edit the reference keymap.** In the configurator, File
+  → Open `~/esp/SMK_test_board/keymap.json`. Its matrix (`rows: [1,2,21]`,
+  `cols: [22,23,16]`, `colsAreDriven: 1`) matches `KeyboardDesign
+  .smkTestBoard` exactly, so the app should auto-select that design — the
+  key grid should render as a labeled 3×3, not a generic/unlabeled
+  fallback. Remap **both** of these:
+  - **row 2 / col 2, layer 0** (currently `key:8`) → `tg:1`.
+  - **row 2 / col 2, layer 1** (currently `key:f8`) → `trans`.
+
+  Leave everything else as-is, including the row 0 / col 2 `mo:1`/`trans`
+  pairing on the encoder.
+
+  Result: ______________________________________________
+
+- [ ] **5b. Upload this edited keymap** via the DEV pane (see Step 7 below
+  for what "upload" looks like mechanically over BLE — do that now, using
+  this edited keymap as the payload, ahead of Step 7's own upload).
+
+  Result: ______________________________________________
+
+- [ ] **5c. `mo:` while held.** Hold the encoder's push-switch down (row 0
+  / col 2 — press straight down on the knob, don't turn it). Confirm the
+  other 8 keys emit `F1`–`F8` (per `keymap.json`'s layer 1) while it's
+  held, and revert to their layer-0 values the instant you release it —
+  no lag, no stuck layer.
+
+  Result: ______________________________________________
+
+- [ ] **5d. `tg:` latching.** Press and release the row 2 / col 2 key once
+  (the `tg:1` you just added). Confirm the board **stays** on layer 1 —
+  the other keys now emit `F1`–`F8` without anything held down. Press the
+  same key again — because layer 1's row 2 / col 2 is now `trans` (Step
+  5a), this falls through to layer 0's `tg:1` and toggles back — confirm
+  it does. If it instead types `F8` and layer 1 stays active, Step 5a's
+  layer-1 edit didn't take; re-check both cells before treating this as a
+  device fault.
+
+  Result: ______________________________________________
+
+---
+
+## Step 6 — BLE HID typing into a Mac
+
+- [ ] **6a. Pair.** On a Mac, open Bluetooth settings and pair to
+  **"SMK Keyboard"** — the device name is hardcoded
+  (`Sources/components/ble_helper.c`) and is the same on every SMK board
+  variant, so if there's another SMK board nearby, confirm you're pairing
+  to this one (e.g. by its MAC/proximity, or by temporarily powering the
+  other one off).
+
+  Result: ______________________________________________
+
+- [ ] **6b. Type.** Open a text field and press keys on the board (layer 0
+  is fine — `1`–`8` plus the `tg:1` you added). Confirm each keystroke
+  appears correctly and promptly.
+
+  Result: ______________________________________________
+
+---
+
+## Step 7 — Keymap upload from the configurator, confirm a remap
+
+This step specifically exercises the upload-and-confirm round trip called
+out in the design spec's §9 check 4 ("the check the 2026-08-15 BLE work
+could not perform, having no switches") — a fresh, isolated remap, separate
+from Step 5's layer edits, so a failure here points at the upload path and
+not at anything layer-related.
+
+Note on what "connected" looks like: the configurator's BLE transport
+(`Sources/SMKConfigurator/Device/BLETransport.swift`) has no live
+connect-status indicator yet — the DEV pane's transport list always shows
+BLE as "Not connected" even mid-upload (see that view's own comment). The
+real signal is the upload itself: no error banner
+("Couldn't send keymap to device: …") and `Send to Device` returning to its
+idle label with a fresh "Last sent Xs ago" timestamp.
+
+- [ ] **7a. Remap one key.** In the configurator (same session as Step 5,
+  or reopen `keymap.json`), change the **row 0 / col 0** key (currently
+  `key:1`) to `key:z`.
+
+  Result: ______________________________________________
+
+- [ ] **7b. Upload.** DEV pane → **Send to Device**. It tries USB first,
+  finds nothing (this board has no USB HID path), then falls back to BLE
+  automatically — no manual transport selection needed. Confirm no error
+  banner appears and `Last sent` updates.
+
+  Result: ______________________________________________
+
+- [ ] **7c. Confirm the remap.** Press the row 0 / col 0 key and confirm it
+  now types `z`, not `1`.
+
+  Result: ______________________________________________
+
+---
+
+## Step 8 — Persistence across power cycle
+
+- [ ] **8a. Power cycle the board** (unplug/replug USB, or full power-off
+  if running on battery — see Step 10).
+
+  Result: ______________________________________________
+
+- [ ] **8b. Confirm the remap survived.** Press row 0 / col 0 again;
+  confirm it still types `z`. If it reverted to `1`, the upload didn't
+  actually persist to NVS — treat this as a firmware/storage bug, not a
+  configurator bug (Step 7 already confirmed the upload path itself
+  worked).
+
+  Result: ______________________________________________
+
+---
+
+## Step 9 — RGB (first hardware validation of the RMT driver)
+
+Nothing has exercised `LedStripDriverRMT.swift` against a real LED chain
+before this board. Give this more than a pass/fail checkbox — a partial
+failure here is the expected way a driver meets real hardware for the
+first time, and where it fails tells you what's wrong.
+
+This firmware's RGB isn't an idle animation — it's **per-key, reactive**:
+`Main.swift` lights a key's LED solid white (255,255,255) on press and
+turns it off on release (see `rgb?.setKey(...)` in the scan loop). "Lights
+and animates" in the design spec's §9 means this — press a key, its LED
+lights; release it, the LED goes dark. There is no boot-time rainbow or
+idle pattern to wait for.
+
+**Expected: RGB3 (row 0 / col 2, under the encoder) will look dimmer than
+the other eight.** The EC11's 12 × 12 mm body covers roughly the southern
+half of RGB3's light window (~49% of it) — reviewed and accepted at design
+time, not a defect. Do not log this as a fault; log it only if RGB3 doesn't
+light at all, or is dim enough to suggest something else is wrong (see
+`docs/fabrication.md`'s DRC triage for the underlying geometry).
+
+- [ ] **9a. Press each of the 9 keys in turn and watch its LED.** Expect:
+  LED lights solid white while held, goes dark on release, and it's the
+  **correct** LED under the key you pressed (the chain is wired
+  serpentine — even rows run col 0→2, odd rows run col 2→0 — so a
+  transposed row is a plausible failure mode, not just "some LED lights").
+
+  Result (note any key whose LED doesn't match, is dim, wrong color, or
+  doesn't light at all):
+  ______________________________________________
+  ______________________________________________
+
+- [ ] **9b. If nothing lights at all:** `led_strip_driver_init` fails
+  silently (no log line) if `rmt_new_tx_channel`/`rmt_new_led_strip_encoder`
+  /`rmt_enable` return nonzero — check GPIO20 wiring, the SN74AHCT1G125
+  level shifter's power (VCC from VSYS, not 3V3 — an unpowered shifter
+  drives nothing downstream) and OE# (tied permanently to GND to enable
+  it), and the 100µF bulk cap at the chain entry.
+
+  Result: ______________________________________________
+
+- [ ] **9c. If only the first LED (under whichever key you press) responds
+  and the rest never do:** points at the chain wiring past RGB1 — a broken
+  DOUT→DIN hop, a cold solder joint on one of the 9 SK6812MINI-E parts, or
+  a reversed LED (DIN/DOUT swapped) partway down the chain. Isolate by
+  checking continuity DOUT(n)→DIN(n+1) starting from RGB1.
+
+  Result: ______________________________________________
+
+- [ ] **9d. If colors look wrong (e.g. a key you expect white shows red or
+  green):** the driver's wire format is GRB, MSB-first — a channel-order
+  mismatch this early usually means a miswired LED footprint, not a
+  software bug (this project's SK6812MINI-E footprint is the fab-proven
+  one shared with `~/esp/SMK_Keyboard`, so a wiring/solder defect is more
+  likely than a footprint error here).
+
+  Result: ______________________________________________
+
+---
+
+## Step 10 — Battery (first hardware validation of `BatteryMonitor`)
+
+Nothing has exercised `BatteryMonitor.swift`/`battery_adc.c` against a real
+cell and a real divider before this board. As with Step 9, a plausible
+partial failure needs somewhere to point, not just a checkbox.
+
+`BatteryMonitor` reads GPIO0 (ADC1_CH0), doubles it (the board's VBAT÷2
+divider — `R1`/`R2`, two 200 kΩ 0603s beside `U1`, VSYS → R1 → midpoint →
+R2 → GND with the midpoint on `U1` pad 1; `vbatDividerRatio = 2` in
+`BatteryMonitor.swift` is correct for it), then maps
+3300mV–4200mV linearly to 0–100% and clamps outside that range. This is a
+rough single-cell Li-ion approximation, not a calibrated discharge curve —
+don't expect a precise number, but a **stable, plausible, slowly-falling**
+one.
+
+- [ ] **10a. Connect a charged single-cell Li-ion to the JST SH connector,
+  unplug USB, and run untethered.** Confirm the board still functions
+  (matrix/BLE) on battery alone.
+
+  Result: ______________________________________________
+
+- [ ] **10b. Check the reported percentage.** On the paired Mac, Bluetooth
+  settings shows a battery percentage for "SMK Keyboard" (via the BLE HID
+  Battery Service). Expect a plausible number (not 0%, not obviously
+  wrong for a charged cell) that **falls slowly** over time/use, not one
+  that's frozen or jumps erratically.
+
+  Result: ______________________________________________
+
+- [ ] **10c. If it's stuck at 0%:** the ADC reading is at or below
+  3300mV/2 at the pin — check the VBAT divider's wiring and that the cell
+  is actually connected/charged, before suspecting the ADC/firmware.
+  Concretely: measure `U1` pad 1 against GND with a charged cell fitted.
+  It should read about half the cell voltage (~1.9–2.1 V). Near 0 V means
+  `R1` is open or unpopulated; near full cell voltage means `R2` is.
+
+  Result: ______________________________________________
+
+- [ ] **10d. If it's stuck at 100%, or implausibly high right after
+  connecting a partially-discharged cell:** the pin reading is at or above
+  4200mV/2 — check for the divider ratio being wrong (e.g. the pin
+  actually seeing near-undivided VBAT, doubling an already-high reading)
+  or the ADC pin shorted toward VSYS/3V3 rather than reading the true
+  divider midpoint.
+
+  Result: ______________________________________________
+
+- [ ] **10e. If `smk_battery_adc_init` failed outright:** the serial
+  monitor logs "Battery ADC init failed; battery reporting disabled"
+  (`BatteryMonitor.swift`'s `initBatteryMonitor()`) — unlike Step 9's RMT
+  driver, this failure path *does* log, so check `idf.py monitor` output
+  first.
+
+  Result: ______________________________________________
+
+---
+
+## Step 11 — Two-Mac bonding
+
+Depends on Step 3b's check (`CONFIG_BT_NIMBLE_MAX_BONDS` in the build you
+actually flashed). If that came back `=1` (the `test-board-config` default,
+pending the unmerged `ble-custom-gatt` branch), **this step is expected to
+fail** — pairing a second Mac evicts the first rather than both coexisting.
+That is a build-configuration gap this branch inherits, not a result to
+record against this board's hardware. Only treat a failure here as a real
+finding if Step 3b's check came back `=4`.
+
+- [ ] **11a. Pair to a first Mac**, confirm typing works (as in Step 6).
+
+  Result: ______________________________________________
+
+- [ ] **11b. Pair to a second Mac** (same device name, "SMK Keyboard" —
+  see Step 6a's note), confirm typing works there too.
+
+  Result: ______________________________________________
+
+- [ ] **11c. Switch back to the first Mac** (put it in range / wake
+  Bluetooth there) and confirm it **reconnects without re-pairing** —
+  no "forgotten device" prompt, no re-entering a passkey.
+
+  Result: ______________________________________________
+
+- [ ] **11d. Switch to the second Mac** and confirm the same — reconnects
+  without re-pairing.
+
+  Result: ______________________________________________
+
+---
+
+## Summary
+
+| Step | Pass/Fail | Notes |
+|---|---|---|
+| 1. Visual + continuity | | |
+| 2. Seat + power | | |
+| 3. Flash (test board Kconfig + bond-count check) | | |
+| 4. Matrix (9 positions, no ghosting) | | |
+| 5. Layers (`mo:`, `tg:`) | | |
+| 6. BLE HID typing | | |
+| 7. Keymap upload + remap | | |
+| 8. Persistence | | |
+| 9. RGB (first RMT validation) | | |
+| 10. Battery (first `BatteryMonitor` validation) | | |
+| 11. Two-Mac bonding | | |
+
+Board is validated when every row above is Pass.

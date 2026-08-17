@@ -1,0 +1,5 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "smk_test_board")(type "KiCad")(uri "${KIPRJMOD}/../smk_test_board.pretty")(options "")(descr "test board footprints drawn by this project"))
+  (lib (name "kbd")(type "KiCad")(uri "${KIPRJMOD}/kbd.pretty")(options "")(descr "footprints re-emitted from generate_macropad.py's own generators"))
+)
