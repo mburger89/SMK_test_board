@@ -40,12 +40,12 @@ recorded here as a hard gate for whoever places the order.
 | Fab house | JLCPCB |
 | Service | **Bare PCB only — no PCBA/assembly.** See reasoning below. |
 | Layers | 2 |
-| Dimensions | 76.0 x 113.16 mm |
+| Dimensions | 65.7 x 91.73 mm (6027 mm²) — inside JLCPCB's 100 x 100 mm price tier |
 | Thickness | 1.6 mm |
 | Copper weight | 1 oz (JLCPCB default; board has no controlled-impedance or high-current nets that need more) |
 | Surface finish | HASL (lead-free) |
 | Soldermask / silkscreen | JLCPCB defaults (green / white) — cosmetic only, not specified by the design |
-| Min hole / min trace-space | 21 plated holes (all 1.0 mm) and 30 unplated (2.4/3.0/3.2/5.2 mm — the largest is the Gateron hot-swap socket's own centre hole, one per socket). Matrix/LED/passive pads are standard sizes from the proven sibling footprint library. |
+| Min hole / min trace-space | **104 plated** — 21 component holes (all 1.0 mm) plus 83 via holes (0.3 mm) — and 30 unplated (2.4/3.0/3.2/5.2 mm — the largest is the Gateron hot-swap socket's own centre hole, one per socket). Smallest trace 0.25 mm, smallest clearance 0.2 mm; JLCPCB's standard process does 0.127 mm for both. Matrix/LED/passive pads are standard sizes from the proven sibling footprint library. |
 | Milled internal cutouts | **9 SK6812MINI-E light windows**, ~3.63 × 3.23 mm rounded rectangles (the real milled opening — the arcs' control-point bounding box, ~3.49 × 3.09 mm, understates it by ~0.15 mm per axis), one per LED, on `Edge.Cuts`. They are not optional decoration: these are reverse-mount LEDs on the back that shine *through* the board. Tightest copper-to-cut on the board is here — see the DRC triage below and checklist item 5. |
 
 **Why bare boards, no PCBA:** at 9 switches, 9 LEDs, 9 diodes, one MCU
@@ -58,11 +58,66 @@ LEDs mount on the **back**; the XIAO module, encoder, level shifter, and
 passives mount on the **front** — both sides need populating regardless of
 who solders them.
 
-**The board ships ratsnest-only.** Like its `~/esp/SMK_macro_pad` siblings,
-routing copper is a separate concern from this task; nothing on this board
-has been routed, and JLCPCB doesn't need routed copper to fab bare boards —
-only Gerbers/drill for the layers and holes that exist. Do not route this
-board as part of ordering it.
+**The outline is derived, not specified.** `build_pcb()` sizes the board to
+the extent of everything it placed plus a 5 mm margin, so the dimension in
+the table above is an output of the generator, not an input to it — there
+is no board-size constant to edit, and a part moved outward grows the
+board on the next run.
+
+It read 76.0 x 113.16 mm until three pockets of slack were closed, in this
+order of value:
+
+| Change | Recovered |
+|---|---|
+| Repacked J1/U2/C12/C_BULK out of a dedicated row *below* U1 and into the empty 16 x 28 mm rectangle beside it | 11.6 mm of height |
+| `KEY_X0` 25.0 → 14.70 — the left margin was 15.3 mm against 5.0 mm on the right | 10.3 mm of width |
+| `KEY_Y0` 25.0 → 15.13 — same slack on top | 9.9 mm of height |
+
+All four margins are now 5 mm and every part is placed by the same
+obstacle-aware search as before. **6027 mm² against 8600, and inside
+JLCPCB's 100 x 100 mm tier**, which the old height missed by 13 mm. Nothing
+electrical changed: same netlist, same 19.05 mm pitch, same footprints,
+same four corner M2 holes. ~65.7 x 91.73 is close to the floor for this
+arrangement — the key field is 55.7 x 53.1 fixed by the pitch, the XIAO
+needs ~21 mm below it, and beating that would mean putting the module
+under the key field, where the back side is already full of sockets,
+diodes and LEDs.
+
+**The board is fully routed.** It shipped ratsnest-only through rev A's
+first drafts — like its `~/esp/SMK_macro_pad` siblings — and no longer
+does. Copper is generated, not drawn: `router.py` routes every net from
+the same `build_nets()` netlist the schematic is built from, and
+`generate_test_board.py` emits the result. Current copper:
+
+| | |
+|---|---|
+| Tracks | 270 segments, 1303 mm total (B.Cu 749 mm, F.Cu 554 mm) |
+| Track widths | 0.25 mm signal, 0.5 mm for VSYS. Both well above JLCPCB's 0.127 mm floor |
+| Vias | 83 — 0.6 mm pad / 0.3 mm drill (JLCPCB floor is 0.45/0.2, annular ring 0.15 mm vs their 0.125 mm minimum) |
+| Ground | GND pours on **both** copper layers, plus 26 pad-tie vias and 6 stitching vias |
+| Unrouted | **Nothing.** DRC reports 0 unconnected items, down from 94 |
+
+Two properties of that copper are worth stating because they are
+requirements, not outcomes, and each has a test guarding it
+(`test_test_board.py`'s routing section):
+
+- **No via sits in a pad, anywhere, on either layer.** Via-in-pad needs
+  filled-and-capped vias to be assemblable; on a plain 2-layer order it
+  wicks solder out of the joint. The router cannot express a via in a pad
+  — a dedicated mask forbids it — and `test_no_via_sits_in_a_pad` checks
+  the emitted board rather than trusting the mask.
+- **Every track is horizontal, vertical or exactly 45°.** No arbitrary
+  angles to inspect, hand-edit or quote around.
+
+**The GND pours ship as outlines, unfilled, on purpose.** KiCad's computed
+fill is derived geometry that changes between KiCad versions; baking it
+into generated output would break this project's byte-identical
+regeneration guarantee the first time anyone ran a different KiCad. The
+fill is computed at the point of use instead — `--refill-zones` for DRC,
+`--check-zones` for the Gerber export, both already wired up. **A Gerber
+export without `--check-zones` plots both ground planes as empty**, which
+is why `export_fab.py` passes it and why you should not hand-roll the
+export command.
 
 ## Bill of materials
 
@@ -125,40 +180,65 @@ re-guessed).
 Run with:
 
 ```bash
-kicad-cli pcb drc --output drc.rpt --severity-error \
+kicad-cli pcb drc --refill-zones --output drc.rpt --severity-error \
   smk_test_board/smk_test_board.kicad_pcb        # errors only
-kicad-cli pcb drc --output drc_full.rpt \
+kicad-cli pcb drc --refill-zones --output drc_full.rpt \
   smk_test_board/smk_test_board.kicad_pcb          # errors + warnings
 ```
 
-Errors-only run: **16 violations, 94 unconnected items, 0 footprint
-errors.** Full run (errors + warnings): **102 violations, 94 unconnected
+**`--refill-zones` is required, not optional.** The board carries GND pours
+stored as outlines only (see the routing note above). Without the flag DRC
+sees two empty zones, cannot check anything the pours touch, and will
+happily report a clean board whose ground planes are missing. Do **not**
+add `--save-board` alongside it: that writes KiCad's computed fill back
+into the generated file and breaks byte-identical regeneration.
+
+Errors-only run: **16 violations, 0 unconnected items, 0 footprint
+errors.** Full run (errors + warnings): **99 violations, 0 unconnected
 items.** At zero and staying there: `hole_clearance`, `solder_mask_bridge`,
 `npth_inside_courtyard`, `copper_edge_clearance`, `text_height`,
-`lib_footprint_issues`.
+`lib_footprint_issues`, `shorting_items`, `starved_thermal`, and
+`clearance`.
+
+**Routing changed the totals in only one direction.** The errors-only
+figure is what the *unrouted* 76 x 113.16 mm board also scored — 16 errors
+— with unconnected items going 94 → 0. Adding tracks, vias and two ground
+pours introduced no new violation category and no new instance of an
+existing one. That is the bar any future routing change should be held to,
+and the 65.7 x 91.73 mm shrink below cleared it too.
+
+**The shrink changed only silk warnings.** The full-run total went 102 → 99
+because the board's silkscreen title was relocated (it now sits in the
+bottom margin, at 1.0 mm rather than 1.2 mm), which retired three
+`silk_over_copper` / `silk_overlap` hits. Nothing else moved: same 16
+errors, same 0 unconnected, `copper_edge_clearance` still 0 on a board with
+30% less area to keep clear.
 
 ### Change against the previous state
 
 The previous table read 16 `courtyards_overlap`, 86 `unconnected_items`, 46
-`lib_footprint_issues`, 37 `silk_over_copper`, 36 `silk_overlap` (135 total; the full run is now 102).
+`lib_footprint_issues`, 37 `silk_over_copper`, 36 `silk_overlap` (135 total; the full run is now 99).
 Every moved number is accounted for below; none of it is rounding.
 
 | Category | Was | Now | Severity | Blocks fab? | What moved, and why |
 |---|---|---|---|---|---|
 | `courtyards_overlap` | 16 | **16** | error | **No** | Unchanged. Every instance is this board's own declared-expected same-key stack: a switch with its own diode and LED beneath it. Courtyard overlap is a placement-density signal, not an electrical or manufacturing defect — the diodes/LEDs sit on the opposite board side from the switch bodies. Expected by design on a deliberately dense 19.05 mm-pitch 3x3 macropad. The four parts added this round (J2, R1, R2, C12) were all placed by the obstacle-aware search against real courtyards and add none. |
-| `unconnected_items` | 86 | **94** | error | **No** | +8, all from the new parts, and every one of them is ratsnest on a board that ships deliberately unrouted (see below). Exactly: GND 25→28 (J2 pad 2, R2 pad 2, C12 pad 2), VSYS 20→23 (J2 pad 1, R1 pad 1, C12 pad 1), and a new `VBAT_SENSE` net at 2 (three nodes — U1 pad 1, R1 pad 2, R2 pad 1 — is two ratsnest links). Nothing that was connected became unconnected. |
+| `unconnected_items` | 94 | **0** | error | **No** | Gone: the board is routed. It previously carried 94 ratsnest links because nothing was routed at all; `router.py` now routes every net and the two GND pours plus 32 ground vias carry the rest. This row is the whole point of the routing work and the one number that must stay at zero — any non-zero value here is an unrouted connection, i.e. a board that does not work. |
 | `lib_footprint_issues` | 46 | **0** | warning | **No** | Gone, and the old explanation for them was wrong. This document used to blame "running `kicad-cli` outside the full KiCad project environment". `kicad-cli` reads the project directory perfectly well; there was simply no `fp-lib-table` committed, so neither `smk_test_board:` nor `kbd:` resolved. Fixing it took three things: (1) the generator now writes `smk_test_board/fp-lib-table` and the `.kicad_pro` the design spec §5 always promised; (2) `kbd:` pointed at a `kbd.pretty` inside a *sibling repo*, so the six `generate_macropad.py` footprints this board uses are now re-emitted into the project's own `smk_test_board/kbd.pretty` and the board is self-contained; (3) `EC11_VERTICAL.kicad_mod` and `XIAO_ESP32C6_HEADERS.kicad_mod` contained `;;` comment lines — KiCad's s-expression parser has no comment syntax, rejects the file, and then refuses to load the **entire** library. That last one is why registering the library alone did not help, and it had been sitting in two committed files unnoticed; the rationale those comments carried now lives in each footprint's `(descr ...)`, which KiCad actually reads. |
 | `lib_footprint_mismatch` | 0 | **9** | warning | **No** | New — and new only because the libraries now resolve at all; this check could not run before. All nine are C1–C9, the per-LED decoupling caps, the only parts on this board placed **back-side** via `gm.fp_0603(side="B")`. Cause: KiCad flips a footprint to the back by mirroring about the **X** axis (y → −y), while `generate_macropad.py`'s `_sx()` mirrors about the **Y** axis (x → −x). The two differ by a 180° rotation, so KiCad's comparison sees a mismatch. For an 0603 the copper, mask, paste, silk and fab geometry are all symmetric and **identical** either way — only which pad is numbered 1 changes, and C1–C9 are non-polar 100 nF ceramics, so nothing on this board is affected. It would matter for a *polarised* or pin-asymmetric part placed back-side through the same helper; `test_back_side_passives_are_all_nonpolar` guards that. Not fixed here because `generate_macropad.py` is a shared module four other generated boards depend on. |
-| `silk_over_copper` | 37 | **38** | warning | **No** | +1 net: −2 (C10 moved off ENC1's reference field, see the `copper_edge_clearance` note) and +3 new (R1's designator over R2's two pads; U2's designator over C12's GND pad). Same root cause as the existing 35: reference-designator text on a dense board clipping a neighbour's soldermask opening. Cosmetic on a fixture assembled by the person who designed it. |
-| `silk_overlap` | 36 | **38** | warning | **No** | +2 net: −2 (ENC1 ref vs C10's silk; ENC1's silk rect vs C11's ref — both cleared when C10/C11 moved) and +4 new (C10 and C11 designators against ENC1's silk envelope at their new position, U2's designator against C12's silk, R1's designator against R2's silk). Silk-on-silk crowding; no copper, mask or paste consequence. |
+| `silk_over_copper` | 37 | **36** | warning | **No** | Net −1, in two steps. Routing took it to 38 (−2 when C10 moved off ENC1's reference field, +3 for R1's designator over R2's two pads and U2's designator over C12's GND pad); the shrink then took it to 36, because the board title moved out of the top margin into the bottom one and shrank to 1.0 mm, clearing two hits it had been scoring against the top row of parts. Same root cause throughout: designator text on a dense board clipping a neighbour's soldermask opening. Cosmetic on a fixture assembled by the person who designed it. |
+| `silk_overlap` | 36 | **37** | warning | **No** | Net +1, in two steps. Routing took it to 38 (−2 for ENC1 ref vs C10's silk and ENC1's silk rect vs C11's ref, both cleared when C10/C11 moved; +4 for the C10/C11 designators against ENC1's silk envelope at their new position, U2's designator against C12's silk, R1's against R2's); the shrink then took it to 37 with the title relocation. Silk-on-silk crowding; no copper, mask or paste consequence. |
 | `silk_edge_clearance` | 0 | **1** | warning | **No** | New, and a direct consequence of milling the LED light windows: at row 0 / col 2 the EC11 shares its matrix cell with RGB3, so ENC1's silkscreen envelope now crosses RGB3's window. Two instances were introduced; one was fixed by moving ENC1's reference designator from y=−8 to y=−9 in the footprint (text placement only — no pad, hole or courtyard change, so the 1:1 print gate is unaffected). The remaining one is ENC1's silk *rectangle* edge, which cannot move without shrinking the envelope below the encoder's real body-plus-posts extent. Silk printed over a milled opening simply isn't printed; nothing electrical. |
 | `copper_edge_clearance` | 0 | **0** | error | **No** | Zero, but it did not start that way and the story matters. Adding the Edge.Cuts windows put 38 copper-to-edge violations on the board. **Two of them were a real defect**: C10, the encoder's debounce cap, had a pad sitting at 0.00 mm from RGB3's window — copper the router would have cut in half. The generator's cap-placement search knew about the EC11's pins and body but not about the LED, and the generator's own overlap scan could not see it either, because C10 and RGB3 share matrix position (0,2) and same-position overlaps are declared expected. Fixed by adding the LED's courtyard to that search. The other 36 are each SK6812MINI-E pad against **its own** light window at 0.2467 mm, which is what the stock KiCad `LED_SK6812MINI-E_3.2x2.8mm_P1.5mm_ReverseMount` footprint measures, used unmodified — the same footprint the sibling `~/esp/SMK_Keyboard/smk_kbd_rp2040` board carries **59** instances of, at this same clearance, and has fabricated successfully. The project's `.kicad_pro` sets `min_copper_edge_clearance = 0.2 mm`, below the real clearance, specifically so this reads as zero errors — that is a **relaxed rule, not a passing check**; it silences the report, it does not mean the clearance is generous. **See the ordering checklist for the number and the precedent an operator actually confirms before proceeding.** |
 | `text_height` | 0 | **0** | warning | **N/A** | Appeared briefly (2) when J2's `BAT+`/`BAT-` silk was drawn at 0.8 mm, below the project's own silk-text floor; the labels are 1.0 mm and it is back to zero. |
 
-**Why `unconnected_items` is not a blocker.** This board ships ratsnest-only,
-exactly like its `~/esp/SMK_macro_pad` siblings. Routing copper is out of
-scope for this fab order; JLCPCB fabs whatever copper/drill data is in the
-Gerbers, and there is none pending beyond what's placed.
+**`unconnected_items` used to be excused here; it no longer needs excusing.**
+This section previously argued the 94 unconnected items were harmless
+because the board shipped ratsnest-only and JLCPCB fabs whatever copper is
+in the Gerbers. That was true of an unrouted board and is no longer the
+situation: the count is 0, and the argument is retired rather than
+restated. If it ever returns to non-zero, it is a defect, not a scope
+boundary.
 
 **On the copper-to-edge number.** This document used to claim KiCad measures
 to the *outer edge* of the 0.12 mm-wide `Edge.Cuts` graphic, and that the gap
@@ -252,12 +332,22 @@ gerbers/
    generator must produce a **byte-identical** `.kicad_pcb`/`.kicad_sch`
    (`git status` clean). If it doesn't, something is non-deterministic and
    "did the board actually change?" stops being answerable.
-3. `./venv/bin/python -m pytest -q` — **23/23** should pass. (It was
-   12 tests when this document first claimed "12/12", 13 by the time the
-   claim was last edited, and 23 now.)
-4. `kicad-cli pcb drc --severity-error` — should show **16 violations / 94
-   unconnected**, all triaged above as non-blocking. Any *new* error
-   category is a real regression; stop and investigate before ordering.
+3. `./venv/bin/python -m pytest -q` — **28/28** should pass, in about a
+   minute. (It was 12 tests when this document first claimed "12/12", 13
+   by the time that claim was last edited, 23 before routing, and 28 now:
+   the five added cover the routed copper — no via in a pad, octilinear
+   tracks only, JLCPCB minimums, every multi-pad net actually carrying
+   copper, and a GND pour on each layer. The suite runs the router once,
+   which is where most of that minute goes.)
+4. `kicad-cli pcb drc --refill-zones --severity-error` — should show
+   **16 violations / 0 unconnected**, all 16 being the same
+   `courtyards_overlap` triaged above as non-blocking. **Do not omit
+   `--refill-zones`**: the GND pours ship unfilled, and without it DRC
+   checks two empty zones and reports a clean board whose ground planes
+   are absent. Do not add `--save-board` either — it writes the computed
+   fill back into the generated file. Any *new* error category, or any
+   non-zero unconnected count, is a real regression; stop and investigate
+   before ordering.
 5. **Confirm the tightest clearance on the board against precedent, not
    against "it happens to clear a fab spec."** The nine SK6812MINI-E light
    windows sit **0.2467 mm** from their own LED pads as KiCad measures it
@@ -286,8 +376,13 @@ gerbers/
    actually being confirmed, so it could pass without checking what the
    step claims to check.
 7. `python3 export_fab.py` — regenerates `gerbers/` and the zip fresh from
-   the current board file. Cross-check `gerbers/drill-report.txt`: **21
-   plated / 30 unplated** holes.
+   the current board file, refilling the GND pours as it plots. It fails
+   loudly if the board has lost its pours or its tracks. Cross-check
+   `gerbers/drill-report.txt`: **104 plated** (21 component holes + 83
+   vias) **/ 30 unplated**. Also confirm the copper layers actually carry
+   the pours — `smk_test_board-F_Cu.gtl` and `-B_Cu.gbl` are ~165 kB and
+   ~209 kB with them and a small fraction of that without; a suspiciously
+   small copper gerber means the fill did not happen.
 8. Upload `smk_test_board_gerbers.zip` to JLCPCB. Select: 2 layers, 1.6 mm,
    HASL, no PCBA/assembly service.
 9. Source the BOM above (`JLCPCB_Sourcing_Report.md` precedent for the

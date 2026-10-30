@@ -389,7 +389,7 @@ def test_every_led_on_the_board_gets_a_window():
     footprint but is somehow lost on the way onto the board is still nine
     dead LEDs."""
     import generate_test_board as tb
-    pcb = tb.build_pcb()
+    pcb = tb.build_pcb(route=False)   # windows are footprint geometry
     per_led = len(tb.SK6812_WINDOW_LINES) + len(tb.SK6812_WINDOW_ARCS)
     assert per_led == 20
     assert pcb.count("Edge.Cuts") == 2 + per_led * tb.LED_COUNT

@@ -35,7 +35,7 @@ fab run.
 | RGB | 9 × SK6812MINI-E, reverse-mount, one per key, behind an SN74AHCT1G125 level shifter |
 | Power | USB-C on the XIAO, or a single-cell Li-ion via JST **SH** (1.0 mm) with flying leads to the module's underside BAT pads |
 | Battery sense | External 1:2 divider (2 × 200 kΩ) into GPIO 0 |
-| Board | 2-layer, 76.0 × 113.16 mm, 1.6 mm |
+| Board | 2-layer, 65.7 × 91.73 mm, 1.6 mm |
 
 The nine LEDs are reverse-mount and shine *through* milled windows in the board
 into each switch's north opening. Those windows are internal `Edge.Cuts`
@@ -88,7 +88,7 @@ docs/superpowers/          design spec and implementation plan
 
 ```bash
 python3 -m venv venv && venv/bin/pip install pytest
-venv/bin/python -m pytest          # 23 tests
+venv/bin/python -m pytest          # 28 tests, ~1 min (routes once)
 python3 generate_test_board.py     # regenerate the KiCad project
 python3 export_fab.py              # gerbers + drill + zip into gerbers/
 ```
@@ -119,8 +119,20 @@ called out in that document:
 
 ## Known and accepted
 
-- The board ships **ratsnest-only** — no copper routing. `unconnected_items` in
-  DRC is expected and is not something to "fix."
+- The board is **fully routed** — 270 tracks, 83 vias, GND poured on both
+  copper layers, 0 unconnected items. It shipped ratsnest-only earlier in
+  rev A, and this entry used to say `unconnected_items` was expected and not
+  something to "fix"; that is no longer true in either direction. A non-zero
+  unconnected count now means a real unrouted connection.
+- The outline is **derived, not chosen** — `build_pcb()` sizes it to the
+  extent of what it placed, plus a 5 mm margin. It was 76.0 × 113.16 mm
+  until the key-field origin and the aux-part placement were tightened to
+  make all four margins equal; the same generator run would grow it again if
+  a part moved outward. Don't hand-set a board size here — move the parts.
+- The GND pours are stored as **outlines only** and filled at the point of
+  use. Run DRC with `--refill-zones` and export gerbers with `--check-zones`
+  (`export_fab.py` already does) — without them the ground planes are simply
+  absent from what you check and what you order.
 - `min_copper_edge_clearance` is relaxed to 0.2 mm in the project file, because
   the SK6812 pads sit ~0.233–0.247 mm from their own light windows. That is a
   **relaxed rule, not a passing check.** The basis for proceeding is precedent:

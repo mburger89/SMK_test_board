@@ -2,7 +2,10 @@
 import math
 import re
 
+import pytest
+
 import generate_test_board as tb
+import router
 
 
 def test_pin_map_matches_spec():
@@ -312,7 +315,7 @@ def test_back_side_passives_are_all_nonpolar():
     }
     NONPOLAR_VALUES = {"100n", "100u", "200k"}   # ceramics and resistors
 
-    pcb = tb.build_pcb()
+    pcb = tb.build_pcb(route=False)   # placement only; routing is ~60s
     entries = re.findall(
         r'\(footprint "([^"]+)"[^\n]*\n\s*\(uuid[^\n]*\n\s*\(at[^\n]*\n'
         r'\s*\(property "Reference" "([^"]+)"[^\n]*\n[^\n]*\n[^\n]*\n'
@@ -335,3 +338,148 @@ def test_back_side_passives_are_all_nonpolar():
             "part, and this one is recognised as neither non-polar nor a "
             "dedicated back-mount footprint immune to the mismatch.")
     assert checked > 0, "no back-side footprints found on the board -- parser broke"
+
+
+# ============================================================== ROUTING ====
+# These read the fully routed board. Routing takes the better part of a
+# minute, so it is built ONCE per session and shared; the placement-only
+# tests above deliberately pass route=False to stay fast.
+
+
+@pytest.fixture(scope="session")
+def routed():
+    """(pcb text, pads, segments, vias) for the routed board."""
+    pcb = tb.build_pcb(route=True)
+    pads, _windows = router.extract_geometry(pcb)
+    segs = [(float(a), float(b), float(c), float(d), float(w), lay)
+            for a, b, c, d, w, lay in re.findall(
+                r'\(segment \(start ([-\d.]+) ([-\d.]+)\) '
+                r'\(end ([-\d.]+) ([-\d.]+)\) \(width ([\d.]+)\) '
+                r'\(layer "([^"]+)"\)', pcb)]
+    vias = [(float(x), float(y), float(s), float(dr))
+            for x, y, s, dr in re.findall(
+                r'\(via \(at ([-\d.]+) ([-\d.]+)\) \(size ([\d.]+)\) '
+                r'\(drill ([\d.]+)\)', pcb)]
+    return pcb, pads, segs, vias
+
+
+def test_no_via_sits_in_a_pad(routed):
+    """No via-in-pad, anywhere, on either layer.
+
+    A via is a through feature, so a pad on the FAR side rules it out just
+    as firmly as one on its own -- hence no layer filtering here. The
+    router enforces this structurally with a dedicated mask rather than by
+    convention (router._build_via_mask), and this is the check that the
+    mask actually holds on the emitted board.
+
+    Via-in-pad needs filled-and-capped vias to be assemblable; on a plain
+    JLCPCB 2-layer order it wicks solder off the joint.
+    """
+    _pcb, pads, _segs, vias = routed
+    assert vias, "expected the routed board to contain vias"
+    worst = None
+    for (vx, vy, size, _drill) in vias:
+        vr = size / 2.0
+        for p in pads:
+            # closest point of the pad rectangle to the via centre
+            dx = max(abs(vx - p.x) - p.hx, 0.0)
+            dy = max(abs(vy - p.y) - p.hy, 0.0)
+            gap = math.hypot(dx, dy) - vr
+            assert gap > 0, (
+                f"via at ({vx}, {vy}) overlaps pad {p.ref}.{p.num} "
+                f"at ({p.x}, {p.y}) by {-gap:.4f}mm")
+            if worst is None or gap < worst[0]:
+                worst = (gap, vx, vy, p.ref, p.num)
+    # Not merely non-overlapping: clear by the design rule too.
+    assert worst[0] >= router.Rules().clearance - 1e-6, (
+        f"closest via-to-pad gap is {worst[0]:.4f}mm at via "
+        f"({worst[1]}, {worst[2]}) vs pad {worst[3]}.{worst[4]}")
+
+
+def test_every_track_is_octilinear(routed):
+    """Every segment is horizontal, vertical or exactly 45 degrees.
+
+    This is the machine-checkable half of "smooth routes, no excessive
+    zigzag": an arbitrary-angle autorouter output is harder to inspect,
+    harder to edit by hand afterwards, and on some fabs' tooling harder to
+    quote. The router only ever emits the eight compass directions, and
+    the string-pull simplification is explicitly restricted to the same
+    set so it cannot introduce an off-angle run.
+    """
+    _pcb, _pads, segs, _vias = routed
+    for (x1, y1, x2, y2, _w, lay) in segs:
+        dx, dy = abs(x2 - x1), abs(y2 - y1)
+        ok = dx < 1e-9 or dy < 1e-9 or abs(dx - dy) < 1e-6
+        assert ok, f"non-octilinear segment on {lay}: ({x1},{y1})->({x2},{y2})"
+
+
+def test_routed_copper_meets_jlcpcb_minimums(routed):
+    """Trace width, via diameter and via drill against JLCPCB's 2-layer
+    standard process -- their floors, not this board's netclass, so the
+    test still means something if the netclass is ever loosened.
+
+    JLCPCB standard (2-layer): 0.127mm trace/space, 0.45mm via diameter,
+    0.2mm via drill, 0.125mm annular ring.
+    """
+    _pcb, _pads, segs, vias = routed
+    JLC_MIN_TRACE, JLC_MIN_VIA, JLC_MIN_DRILL, JLC_MIN_ANNULUS = (
+        0.127, 0.45, 0.2, 0.125)
+    for (x1, y1, _x2, _y2, w, lay) in segs:
+        assert w >= JLC_MIN_TRACE, f"{w}mm trace on {lay} at ({x1},{y1})"
+    for (vx, vy, size, drill) in vias:
+        assert size >= JLC_MIN_VIA, f"{size}mm via at ({vx},{vy})"
+        assert drill >= JLC_MIN_DRILL, f"{drill}mm drill at ({vx},{vy})"
+        assert (size - drill) / 2.0 >= JLC_MIN_ANNULUS, (
+            f"annular ring {(size - drill) / 2.0}mm at ({vx},{vy})")
+
+
+def test_every_multi_pad_net_actually_got_copper(routed):
+    """Every net with two or more pads has copper on the board.
+
+    build_pcb() already raises if the router reports a failure, so this
+    guards the quieter direction: a net dropped before routing (excluded
+    from the work list, filtered out by a bad predicate) would leave the
+    board silently short of a connection with nothing raised.
+
+    GND passes this too, which is worth noticing rather than excusing: it
+    is a poured net with no pad-to-pad routing at all, but every one of
+    its pads is stubbed out to its own via, so it does carry copper. If
+    that ever stops being true this test is the one that says so.
+    """
+    pcb, pads, _segs, _vias = routed
+    by_net = {}
+    for p in pads:
+        if p.net:
+            by_net.setdefault(p.net, []).append(p)
+
+    net_id = {name: num for num, name in
+              re.findall(r'^\s*\(net (\d+) "([^"]*)"\)$', pcb, re.M)}
+    copper_nets = set(re.findall(r'\((?:segment|via)[^\n]*?\(net (\d+)\)', pcb))
+
+    for net, members in sorted(by_net.items()):
+        if len(members) < 2:
+            continue
+        assert net in net_id, f"net {net} missing from the net declarations"
+        assert net_id[net] in copper_nets, (
+            f"net {net} has {len(members)} pads but no routed copper")
+
+
+def test_ground_pours_cover_both_layers(routed):
+    """A GND pour on each copper layer, and each one unfilled in the file.
+
+    Unfilled is the point, not an oversight: KiCad's computed fill is
+    derived geometry that changes with the KiCad version, and baking it
+    into generated output would break the byte-identical regeneration
+    guarantee. It is computed at the point of use instead --
+    `kicad-cli pcb drc --refill-zones` and export_fab.py's
+    `--check-zones`. A `filled_polygon` appearing here means someone saved
+    the board from the GUI over the generated file.
+    """
+    pcb, _pads, _segs, _vias = routed
+    for layer in ("F.Cu", "B.Cu"):
+        assert re.search(r'\(zone \(net \d+\) \(net_name "GND"\) '
+                         r'\(layer "%s"\)' % re.escape(layer), pcb), \
+            f"no GND pour on {layer}"
+    assert "(filled_polygon" not in pcb, (
+        "generated board carries baked-in zone fill; it must ship as zone "
+        "outlines only (see router.gnd_zones)")

@@ -13,3 +13,7 @@ gerbers/
 # Python
 __pycache__/
 venv/
+
+# symlink to ../smk_shared (shared datasheets + KiCad library)
+/shared
+.mcp.json
