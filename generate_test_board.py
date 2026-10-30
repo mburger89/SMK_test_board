@@ -37,6 +37,8 @@ if not os.path.isdir(_SIBLING):
 sys.path.insert(0, _SIBLING)
 import generate_macropad as gm  # noqa: E402
 
+import router
+
 PROJ = "smk_test_board"
 PRJDIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), PROJ)
 
@@ -45,9 +47,21 @@ COLS = 3
 LED_COUNT = ROWS * COLS
 KEY_PITCH = 19.05
 
-# Origin of the key field on the board, in mm.
-KEY_X0 = 25.0
-KEY_Y0 = 25.0
+# Origin of the key field on the board, in mm. These two numbers set the
+# board's TOP and LEFT margins, because the outline below is derived as
+# "extent of everything placed, plus MARGIN" from a fixed (0, 0) origin --
+# so the far/bottom margin is always MARGIN, but the near/top-left one is
+# whatever the key field's own offset leaves over.
+#
+# They are chosen so that the leftmost and topmost part on the board (the
+# row0/col0 switch's back courtyard, and the row0 decoupling caps) land
+# exactly on MARGIN, making all four margins equal. At the original 25.0 /
+# 25.0 they left 15.3mm on the left and 14.9mm on top against 5mm on the
+# other two sides -- 10.3 x 9.9mm of board bought for nothing.
+# `_assert_inside_margin()` below re-derives this from the real placement
+# on every build, so these two constants cannot silently drift off it.
+KEY_X0 = 14.70
+KEY_Y0 = 15.13
 
 # The contract with ~/esp/SMK's board config and the configurator's
 # KeyboardDesign. All three must agree; see the spec's section 1.
@@ -167,9 +181,11 @@ def build_nets():
     add("GND", "C11", "2")
 
     # U2's own local decoupling. Controller review (final wave): the level
-    # shifter had nothing on VCC at all -- the nearest cap was C_BULK, 19mm
-    # away down the bottom edge, which is a bulk reservoir, not local
-    # decoupling for a part switching an 800kHz-ish WS2812 data line.
+    # shifter had nothing on VCC at all -- the nearest cap was C_BULK, which
+    # is a bulk reservoir at the power entry, not local decoupling for a part
+    # switching an 800kHz-ish WS2812 data line. (It was 19mm away down the
+    # bottom edge then; the bottom edge is gone and it is now 33mm away at
+    # J1/J2, which only sharpens the point.)
     add("VSYS", "C12", "1")
     add("GND", "C12", "2")
 
@@ -1106,6 +1122,10 @@ def _cap_offsets_near(refs, obstacles, near_x, near_y, w=3.0, h=1.8, max_dist=6.
 # ref -> (x, y, side, rot). What placed() returns; also what the overlap
 # scan and the "everything inside the outline" check both read.
 PLACED = {}
+
+# Populated by build_pcb() when it routes; read by main()'s log line and by
+# the tests that assert the board actually has copper on it.
+ROUTE_STATS = {}
 # ref -> (r, c) matrix position, for every matrix-position part (switch or
 # its EC11 stand-in, diode, LED). Two parts sharing a position is the one
 # kind of overlap this board's layout accepts on purpose (LED/diode tucked
@@ -1138,12 +1158,19 @@ def _expected_overlap_tb(r1, r2):
     return p1 is not None and p1 == p2
 
 
-def build_pcb():
+def build_pcb(route=True):
     """Places every footprint and returns the .kicad_pcb text. Also
     populates the module-level PLACED/POS_OF_REF registries (read by
     placed()/check_overlaps()) and BOARD_W/BOARD_H as a side effect, so
     tests can call placed() or check_overlaps() directly without a separate
-    build step."""
+    build step.
+
+    `route=False` skips the copper routing pass and emits the board with
+    pours but no traces. Routing takes the better part of a minute, and
+    the placement-only callers below (`placed()`, `check_overlaps()`, and
+    the tests that use them) do not look at copper -- paying for it on
+    every one of those calls would make the test suite unusable. The
+    shipped board always routes: `main()` takes the default."""
     global BOARD_W, BOARD_H
     gm.FPBOX.clear()
     PLACED.clear()
@@ -1345,10 +1372,12 @@ def build_pcb():
     # search will refuse to place J2 anywhere that doesn't have it.
     #
     # Seeded to U1's LEFT (-19.0mm) rather than its right: the right side at
-    # this y would push the board outline out past its current 76mm width,
-    # and the left side at y = xiao_y is empty board (the nearest neighbours
-    # are the key field's back courtyards, which stop at y~71, and H3 at the
-    # bottom-left corner).
+    # this y is the narrower of the two columns beside U1 and is spoken for
+    # by the level shifter (section 3), and the left side at y = xiao_y is
+    # empty board -- the nearest neighbours are the key field's back
+    # courtyards above and H3 at the bottom-left corner. Left also keeps J2
+    # off the widest part of the board, which matters because the outline is
+    # derived from the placement: a part pushed east here widens the board.
     bat_w, bat_h = BAT_PADS_HALF[0] * 2, BAT_PADS_HALF[1] * 2
     j2x, j2y, j2_clear = _best_clear_offset(
         _placed_obstacles(), field_cx - 19.0, xiao_y, bat_w, bat_h,
@@ -1360,14 +1389,31 @@ def build_pcb():
                             {1: net_on("J2", "1"), 2: net_on("J2", "2")}))
     _place("J2", "F", j2x, j2y, *BAT_PADS_HALF)
 
-    # ---- 2c. VBAT sense divider (R1/R2), beside U1's pad 1 ----
+    # ---- 2c. VBAT sense divider (R1/R2), just above U1's pad 1 ----
     # VSYS -> R1 -> VBAT_SENSE -> R2 -> GND, midpoint on U1 pad 1 (D0 /
     # GPIO0 / ADC1_CH0). Placed with the same obstacle-aware machinery as
     # everything else, seeded near U1's own pad 1 (local -8.89, -7.62) so
     # the sense trace is short; the search pushes them clear of U1's
     # courtyard on its own, since that courtyard is in the obstacle set.
-    div_near_x = field_cx - 12.5
-    div_near_y = xiao_y - 7.62
+    #
+    # Seeded NORTH of pad 1 rather than WEST of it, which is where this used
+    # to sit. Both spots give an equally short sense trace -- and that trace
+    # length is the reason this part is placed near U1 at all, since 200k/200k
+    # makes VBAT_SENSE a 100k-source-impedance node that should not be run
+    # across the board -- but west of pad 1 is the inside of U1's fan-in
+    # funnel. ROW0, ROW1 and ROW2 all dive for the back layer within 4mm of
+    # that corner and VSYS/VBAT_SENSE close it from the south, and on the
+    # shrunk board those five traces sealed R1/R2 into a 13.6mm^2 pocket of
+    # GND pour with no path to the rest of the plane: one `unconnected_items`
+    # zone-to-zone error, and R2's ground returning through a private island.
+    # North of pad 1 is the open band between the key field and U1, which the
+    # ROW traces cross but cannot enclose.
+    #
+    # Note this is NOT something the placement search could have avoided on
+    # its own: it runs before the router, so the walls of that funnel do not
+    # exist yet and no obstacle set can describe them. The seed has to know.
+    div_near_x = field_cx - 8.89
+    div_near_y = xiao_y - 10.5 - 2.0
     div_xy = _cap_offsets_near(["R1", "R2"], _placed_obstacles(),
                                div_near_x, div_near_y, max_dist=8.0)
     for rref in ("R1", "R2"):
@@ -1377,24 +1423,53 @@ def build_pcb():
                               net_on(rref, "1"), net_on(rref, "2"), side=_side))
         _place(rref, _side, rx, ry, 1.5, 0.9)
 
-    # ---- 3. level shifter, bulk cap, JST -- bottom edge ----
-    bottom_y = xiao_y + 10.5 + 5 + 3.28
-    fps.append(gm.fp_jst_sh("J1", field_x0, bottom_y, 0, gm.U("sym", "J1"),
-                            net_on("J1", "1"), net_on("J1", "2")))
-    _place("J1", "B", field_x0, bottom_y, 2.9, 3.28)
-
+    # ---- 3. level shifter, bulk cap, JST -- in the columns flanking U1 ----
+    # These four used to sit in a dedicated row 15mm BELOW U1 (a `bottom_y`
+    # constant), which cost the board 11.6mm of height to carry one
+    # connector and three 0603s while the 16 x 28mm rectangle beside U1 sat
+    # completely empty. They are searched into that empty space instead, so
+    # the board now ends at U1's own courtyard.
+    #
+    # Same obstacle-aware machinery as J2 and the divider above: the seeds
+    # below only choose WHICH SIDE of U1 a part starts from, and
+    # _best_clear_offset() reads the real courtyards already in gm.FPBOX to
+    # pick the actual spot. Nothing here is a hand-measured coordinate.
+    #
+    # Which side is electrical, not cosmetic:
+    #   U2 + C12  RIGHT, at U1's pad 10 (local +8.89, -2.54) -- that pad is
+    #             LEDD0, the level shifter's own input.
+    #   J1        LEFT, stacked above J2. Both are VSYS/GND, and the battery
+    #             path runs J1 -> VSYS -> J2 -> the module's underside BAT
+    #             pads, so splitting them across U1 would loop that current
+    #             the whole way around the module.
+    #   C_BULK    LEFT, below J2, i.e. at the power entry. U1 has no VSYS
+    #             pin at all (check build_nets(): VSYS's only sources are
+    #             J1/J2), so the rail enters the board here -- which is
+    #             where a bulk cap belongs, and 25mm nearer than the far
+    #             bottom-right corner it used to occupy.
+    #
+    # Every seed keeps its part inside U1's own vertical span
+    # (xiao_y +- 10.5), which is what holds max_y at U1's courtyard and
+    # stops any of this from re-growing the board it just shrank. The
+    # `_assert_inside_margin` block in section 4 catches the top-side half
+    # of that; the board height itself catches the bottom.
     lvl_pinnet = {int(real_pad("SOT-23-5", k)): net_on("U2", k)
                  for k in ("OE#", "A", "GND", "Y", "VCC")}
-    fps.append(gm.fp_sot23_5("U2", "SN74AHCT1G125DBVR", field_cx, bottom_y, 0,
+    u2x, u2y, _u2_clear = _best_clear_offset(
+        _placed_obstacles(), field_cx + 10.2 + 2.5, xiao_y - 2.54,
+        3.4, 4.0, max_dist=6.0)
+    fps.append(gm.fp_sot23_5("U2", "SN74AHCT1G125DBVR", u2x, u2y, 0,
                              gm.U("sym", "U2"), lvl_pinnet))
-    _place("U2", "F", field_cx, bottom_y, 1.7, 2.0)
+    _place("U2", "F", u2x, u2y, 1.7, 2.0)
 
     # U2's local decoupling (C12). Controller review (final wave): the level
-    # shifter had no decoupling at all -- nearest cap was C_BULK, 19mm away
-    # at the far end of the bottom edge. Seeded at U2's own VCC pad (pad 5,
+    # shifter had no decoupling at all -- the nearest cap was C_BULK, which
+    # is a bulk reservoir at the power entry, not local decoupling, and is
+    # 33mm away across the board (19mm at the time of that review, before
+    # both parts moved off the bottom edge). Seeded at U2's own VCC pad (pad 5,
     # local (-0.95, -1.3) per gm.fp_sot23_5) so the loop is short; the
     # search then walks it out clear of U2's courtyard.
-    u2_vcc_x, u2_vcc_y = field_cx - 0.95, bottom_y - 1.3
+    u2_vcc_x, u2_vcc_y = u2x - 0.95, u2y - 1.3
     dec_xy = _cap_offsets_near(["C12"], _placed_obstacles(),
                                u2_vcc_x, u2_vcc_y - 2.5, max_dist=6.0)
     c12x, c12y = dec_xy["C12"]
@@ -1403,6 +1478,20 @@ def build_pcb():
                           net_on("C12", "1"), net_on("C12", "2"), side=_side))
     _place("C12", _side, c12x, c12y, 1.5, 0.9)
 
+    # J1, stacked above J2. min_clear=1.0 rather than the caps' 0.3: this is
+    # a JST SH shell, and the mating connector plus its wires need room to
+    # leave the housing -- 0.3mm of courtyard clearance would pass the
+    # overlap scan and still be un-mateable next to J2's own solder joints.
+    j1x, j1y, j1_clear = _best_clear_offset(
+        _placed_obstacles(), j2x, j2y - 7.8, 5.8, 6.56,
+        max_dist=6.0, min_clear=1.0)
+    assert j1_clear >= 1.0, (
+        f"J1 (battery JST) could only reach {j1_clear:.2f}mm clearance in "
+        "the column beside U1 -- not enough room to mate the connector")
+    fps.append(gm.fp_jst_sh("J1", j1x, j1y, 0, gm.U("sym", "J1"),
+                            net_on("J1", "1"), net_on("J1", "2")))
+    _place("J1", "B", j1x, j1y, 2.9, 3.28)
+
     # Ref C_BULK, not C1 -- C1..C12 are the per-LED / encoder-debounce /
     # level-shifter decoupling caps, so a numbered ref here would shadow one.
     # Its nets come from build_nets() like every other part's: passing
@@ -1410,22 +1499,43 @@ def build_pcb():
     # netlist build_sch() renders from, which is exactly why it was one of
     # the 12 parts missing from the schematic.
     _sym, _val, _fpn, _side = AUX_PARTS["C_BULK"]
-    fps.append(gm.fp_0603("C_BULK", _val, field_x1, bottom_y, 0,
+    bulk_xy = _cap_offsets_near(["C_BULK"], _placed_obstacles(),
+                                j2x, j2y + 4.9, max_dist=6.0)
+    bulkx, bulky = bulk_xy["C_BULK"]
+    fps.append(gm.fp_0603("C_BULK", _val, bulkx, bulky, 0,
                           gm.U("sym", "C_BULK"),
                           net_on("C_BULK", "1"), net_on("C_BULK", "2"),
                           side=_side))
-    _place("C_BULK", _side, field_x1, bottom_y, 1.5, 0.9)
+    _place("C_BULK", _side, bulkx, bulky, 1.5, 0.9)
 
     # ---- 4. board outline + BOARD_W/BOARD_H ----
     # Derived from the extents of everything placed so far (mounting holes
     # excluded -- they are positioned FROM the board size, so including
-    # them would be circular), plus a 5mm margin. Origin is (0,0); every
-    # part above already has >5mm clearance to the origin corner on its
-    # own (the nearest thing, a switch back-courtyard, sits at x=15.3,
-    # y=17.5), so only the far/bottom margin needs to be added explicitly.
+    # them would be circular), plus a 5mm margin. The origin is (0, 0) and
+    # does not move, so this expression only ever sets the far and bottom
+    # margins; the near ones are whatever KEY_X0/KEY_Y0 happen to leave.
+    #
+    # That asymmetry is why the assertion below exists. The margin used to
+    # be quietly true by 10mm and documented in a comment, which is fine
+    # right up until a placement change eats the slack -- at which point a
+    # part hangs off the top or left edge and NOTHING here notices, because
+    # min() is never taken. Now the near margin is checked with the same
+    # 5mm the far one is built with, and KEY_X0/KEY_Y0 are tuned so both
+    # sides land on it exactly.
+    MARGIN = 5.0
     max_x = max(x + hx for (_ref, x, y, hx, hy) in gm.FPBOX)
     max_y = max(y + hy for (_ref, x, y, hx, hy) in gm.FPBOX)
-    MARGIN = 5.0
+    min_x = min(x - hx for (_ref, x, y, hx, hy) in gm.FPBOX)
+    min_y = min(y - hy for (_ref, x, y, hx, hy) in gm.FPBOX)
+    _tight = [(ref, round(x - hx, 2), round(y - hy, 2))
+              for (ref, x, y, hx, hy) in gm.FPBOX
+              if x - hx < MARGIN - 1e-6 or y - hy < MARGIN - 1e-6]
+    assert not _tight, (
+        f"{len(_tight)} footprint(s) are inside the {MARGIN}mm top/left "
+        f"margin (nearest edges x={min_x:.2f}, y={min_y:.2f}): {_tight}. "
+        "The board outline starts at (0, 0) and grows down/right only, so "
+        "these hang off the edge rather than widening the board -- shift "
+        "the key field with KEY_X0/KEY_Y0 instead of moving the part.")
     BOARD_W = round(max_x + MARGIN, 2)
     BOARD_H = round(max_y + MARGIN, 2)
 
@@ -1436,22 +1546,65 @@ def build_pcb():
         fps.append(gm.fp_hole(f"H{hi}", hx, hy))
         _place(f"H{hi}", "F", hx, hy, 2.4, 2.4)
 
+    # ---- 6. copper: GND pours + routed traces ----
+    # GND is a pour on both layers, not a routed tree. That is the right
+    # answer for its 29 pads spread over both sides of the board, and it
+    # is what the EMC pre-compliance analyser's top finding (GP-002, "no
+    # ground plane zones detected", severity error) asks for. Because the
+    # pour carries GND, the router is told to skip that net entirely --
+    # GND pads still act as obstacles, they just are not routed to.
+    #
+    # Everything else is routed by router.py. See its module docstring for
+    # the algorithm; the three properties that matter here are that it is
+    # deterministic (this file promises a byte-identical regeneration),
+    # that it can never place a via in a pad, and that it holds new copper
+    # to JLCPCB's 0.3mm copper-to-edge rule.
+    tracks = ""
+    zones = router.gnd_zones(BOARD_W, BOARD_H, gm.NETI["GND"], "GND", gm.U)
+    if route:
+        pads, windows = router.extract_geometry("".join(fps))
+        rt = router.Router(BOARD_W, BOARD_H, pads, windows,
+                           net_ids=gm.NETI, pour_nets={"GND"})
+        result = rt.route_with_retries()
+        if result.failed:
+            raise SystemExit(
+                "router could not complete these connections:\n  "
+                + "\n  ".join(f"{n}: {w}" for n, w in result.failed))
+        result.vias.extend(rt.stitching_vias("GND"))
+        tracks = router.emit_tracks(result, gm.NETI, gm.U)
+        ROUTE_STATS.clear()
+        ROUTE_STATS.update(segments=len(result.segments),
+                           vias=len(result.vias))
+
     nets_decl = "\n".join(f'  (net {i} "{n}")' for i, n in enumerate([""] + net_names))
     edge = (f'  (gr_rect (start 0 0) (end {BOARD_W:g} {BOARD_H:g}) '
            f'(stroke (width 0.1) (type solid)) (fill none) (layer "Edge.Cuts") '
            f'(uuid "{gm.NU("edge")}"))')
-    # Title text: the original (5,4) placement sat inside H1's silkscreen
-    # circle (centered at (MARGIN, MARGIN)=(5,5), radius 2.3mm, spanning
-    # x=2.7..7.3, y=2.7..7.7) and clipped the top board edge. Nudging it
-    # sideways to clear H1 wasn't enough on its own -- the string is long
-    # enough that its right end then reached H2's circle at
-    # (BOARD_W-MARGIN, MARGIN). Dropping it to y=10.5 instead clears both
-    # corner holes' circles (which end at y=7.7) by the same margin
-    # regardless of board width, at the cost of a couple mm of headroom
-    # before the first row of components (nearest is C1 at y~15.8).
+    # Title text. Two placements have already failed here and the reason is
+    # the same both times: the top margin is the most contested strip on
+    # this board. The original (5, 4) sat inside H1's silkscreen circle
+    # (centred on (MARGIN, MARGIN), radius 2.3mm) and clipped the top edge;
+    # sliding it sideways only walked it into H2's circle at
+    # (BOARD_W-MARGIN, MARGIN), because the string is nearly as wide as the
+    # board. Dropping it to y=10.5 cleared both circles -- and then the
+    # KEY_Y0 shift that squeezed the top margin down to 5mm pulled the
+    # RGB1..3 light windows up to y=7.2, straight underneath it. Silk over
+    # a milled opening does not exist on the finished board.
+    #
+    # So it moves out of that strip entirely, to the bottom margin -- the
+    # only band on the shrunk board wide enough for a 40mm string that no
+    # component wants. The gap between the key field and U1 looked like the
+    # better home and briefly was, until the VBAT divider had to move into
+    # it (section 2c) to escape U1's fan-in funnel; a real 0603 outweighs a
+    # silk banner, so the banner yields.
+    #
+    # x starts 4mm inside MARGIN to clear H3's silkscreen circle, and 1.0mm
+    # glyphs (not 1.2) keep it between U1's own "XIAO_ESP32C6" value text,
+    # which its footprint puts 12mm below xiao_y, and the board edge.
     title = (f'  (gr_text "SMK TEST BOARD -- 3x3, XIAO ESP32-C6 + EC11  rev A" '
-            f'(at 7 10.5) (layer "F.SilkS") (uuid "{gm.NU("gt")}")\n'
-            f'    (effects (font (size 1.2 1.2) (thickness 0.18)) (justify left)))')
+            f'(at {MARGIN + 4:g} {BOARD_H - 2.0:g}) (layer "F.SilkS") '
+            f'(uuid "{gm.NU("gt")}")\n'
+            f'    (effects (font (size 1 1) (thickness 0.15)) (justify left)))')
 
     return f'''(kicad_pcb (version 20240108) (generator "pcbnew") (generator_version "8.0")
   (general (thickness 1.6) (legacy_teardrops no))
@@ -1540,6 +1693,8 @@ def build_pcb():
   )
 {nets_decl}
 {"".join(fps)}
+{tracks}
+{zones}
 {edge}
 {title}
 )
@@ -1548,7 +1703,7 @@ def build_pcb():
 
 def placed():
     """ref -> (x, y, side, rot) for every footprint on the board."""
-    build_pcb()
+    build_pcb(route=False)
     return dict(PLACED)
 
 
@@ -1558,7 +1713,7 @@ def check_overlaps():
     this board's own _expected_overlap_tb (matrix-position matching, not
     gm's Dn/SWn ref-name pattern -- this board's LEDs don't fit that
     pattern) installed first."""
-    build_pcb()
+    build_pcb(route=False)
     gm._expected_overlap = _expected_overlap_tb
     return gm.check_overlaps()
 
@@ -1615,9 +1770,8 @@ def write_project_libs():
             '  (lib (name "smk_test_board")(type "KiCad")'
             '(uri "${KIPRJMOD}/../smk_test_board.pretty")(options "")'
             '(descr "test board footprints drawn by this project"))\n'
-            '  (lib (name "kbd")(type "KiCad")(uri "${KIPRJMOD}/kbd.pretty")'
-            '(options "")(descr "footprints re-emitted from '
-            'generate_macropad.py\'s own generators"))\n'
+            '  (lib (name "kbd")(type "KiCad")(uri "${KIPRJMOD}/../shared/kicad/kbd.pretty")'
+            '(options "")(descr "shared SMK footprints (smk_shared)"))\n'
             ')\n')
 
     pro_path = os.path.join(PRJDIR, f"{PROJ}.kicad_pro")
@@ -1650,16 +1804,22 @@ def build_pro():
                     # LED_SK6812MINI-E_3.2x2.8mm_P1.5mm_ReverseMount
                     # footprint, used unmodified, and that the sibling board
                     # ~/esp/SMK_Keyboard/smk_kbd_rp2040 has already
-                    # fabricated 58 times. Note KiCad measures to the OUTER
-                    # EDGE of the 0.12mm-wide Edge.Cuts graphic; the gap to
-                    # the nominal cut path (what the router actually
-                    # follows) is 0.3067mm. Left at 0.5 or 0.3 this rule
+                    # fabricated 59 times. This comment used to claim KiCad
+                    # measures to the OUTER EDGE of the 0.12mm-wide
+                    # Edge.Cuts graphic and that the gap to the nominal cut
+                    # path is 0.3067mm. That is false and was disproved
+                    # directly (widening the stroke to 0.4mm changed the
+                    # reported clearances not at all): 0.2467mm is already
+                    # the copper-to-centreline figure, and reconstructing
+                    # the corner arcs puts the true minimum at ~0.2329mm.
+                    # docs/fabrication.md carries the full correction.
+                    # Left at 0.5 or 0.3 this rule
                     # reports 36 errors that are inherent to a proven part
                     # and cannot be fixed without redrawing the footprint --
                     # which would break the light window it exists for.
                     # docs/fabrication.md's ordering checklist carries the
                     # matching instruction to confirm the fab's
-                    # copper-to-slot capability covers 0.25mm.
+                    # copper-to-slot capability covers ~0.233mm.
                     "min_copper_edge_clearance": 0.2,
                     "min_hole_clearance": 0.20,
                     "min_hole_to_hole": 0.25,

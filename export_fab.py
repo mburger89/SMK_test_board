@@ -6,9 +6,15 @@ zone-fill / plot-gerbers / write-drill / zip pipeline that ecosystem uses),
 adapted to drive kicad-cli instead of KiCad's bundled pcbnew module -- this
 board's DRC/export work already runs kicad-cli directly (see
 docs/fabrication.md), so staying on one tool avoids needing a second Python
-interpreter. Also: this board has no copper pours, so there is nothing to
-zone-fill; the check below exists so a future revision that adds a GND pour
-doesn't silently ship unfilled zones.
+interpreter.
+
+Zone fill: the board carries GND pours on both copper layers, and the
+generated .kicad_pcb deliberately stores them as OUTLINES ONLY -- see
+router.gnd_zones() for why (a baked-in fill is KiCad-version-dependent
+derived geometry and would break the byte-identical regeneration
+guarantee). The fill is therefore computed here, at export time, by
+`--check-zones`. Without that flag the pours would plot as empty and the
+board would ship with no ground plane at all.
 
 Run with the system/venv Python (this only shells out to kicad-cli, no
 pcbnew import needed):
@@ -56,20 +62,35 @@ if not os.path.isfile(BOARD):
 
 os.makedirs(OUT, exist_ok=True)
 
-# 1. Zone-fill check. This is a bare 2-layer board shipped ratsnest-only
-# (see docs/fabrication.md) -- there is no GND pour or any other copper
-# zone to fill. Fail loudly rather than silently exporting unfilled
-# copper if that ever changes; the sibling generator's zone-fill step
-# would need porting here too if it does.
+# 1. Sanity-check the copper the board is supposed to have. This used to
+# assert the OPPOSITE -- that the board carried no zones at all -- back
+# when it shipped ratsnest-only. It is now routed, with a GND pour per
+# copper layer, so the check is inverted: a board that has lost its pours
+# or its tracks is the failure worth catching, because both would export
+# without complaint and arrive as unusable bare copper.
 with open(BOARD, "r", encoding="utf-8") as f:
     board_text = f.read()
-if "(zone " in board_text or "(zone\n" in board_text:
+for layer in ("F.Cu", "B.Cu"):
+    if f'(net_name "GND") (layer "{layer}")' not in board_text:
+        raise SystemExit(
+            f"board has no GND pour on {layer} -- expected one per copper "
+            "layer (see router.gnd_zones). Regenerate with "
+            "generate_test_board.py before exporting."
+        )
+if "(segment " not in board_text:
     raise SystemExit(
-        "board now has one or more zones -- this script has no zone-fill "
-        "step. Port the fill-zones-then-save step from "
-        "~/esp/SMK_Keyboard/smk_kbd_rp2040/export_fab.py before exporting."
+        "board carries no tracks. It is meant to be fully routed; "
+        "regenerate with generate_test_board.py before exporting."
     )
-print("no copper zones on this board -- zone-fill step is a no-op, as expected")
+if "(filled_polygon" in board_text:
+    raise SystemExit(
+        "board carries baked-in zone fill. The generated board must hold "
+        "zone OUTLINES only -- someone has saved it from the KiCad GUI "
+        "over the generated file. Regenerate before exporting."
+    )
+n_seg = board_text.count("(segment ")
+n_via = board_text.count("(via (at ")
+print(f"routed board: {n_seg} tracks, {n_via} vias, GND pour on both layers")
 
 # 2. Gerbers. Layer set matches the RP2040 sibling's export_fab.py minus
 # the inner copper layers this board doesn't have (it's 2-layer, not 4).
@@ -80,14 +101,17 @@ GERBER_LAYERS = ",".join([
     "F.Paste", "B.Paste",
     "Edge.Cuts",
 ])
+# --check-zones is load-bearing, not a nicety: the pours ship unfilled (see
+# the module docstring), so without it both ground planes plot as nothing.
 run(
     "pcb", "export", "gerbers",
     "--output", OUT + os.sep,
     "--layers", GERBER_LAYERS,
     "--subtract-soldermask",
+    "--check-zones",
     BOARD,
 )
-print("gerbers plotted")
+print("gerbers plotted (zones refilled at export time)")
 
 # 3. Drill files (Excellon, metric, PTH/NPTH split -- the board has both).
 #
